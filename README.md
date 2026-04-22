@@ -16,9 +16,13 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 ---
 
-## 📸 Preview
+## Preview
 
-![Preview](ym-bridge-ui-preview.png)
+<p align="center">
+  <img src="ym-bridge-ui-preview.png" style="max-width: 900px; width: 100%;" alt="Yandex Music → Last.fm Bridge UI">
+  <br/>
+  <em>Live UI: extension + desktop companion working together</em>
+</p>
 
 ---
 
