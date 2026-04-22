@@ -12,7 +12,7 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 - **Browser extension:** Chrome Web Store or manual install from `ym_bridge_ext`
 
-> Extension: **[Download extension (.zip)](https://github.com/MaratShamsutdinov/yandex_to_lastfm/releases)**
+> Extension: **[Download extension (.zip)](https://chromewebstore.google.com/detail/cjemkikpabifhldcdkopinpejahljcin?utm_source=item-share-cb)**
 
 ---
 
