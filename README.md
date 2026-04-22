@@ -26,17 +26,17 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 ## Features
 
-- 🎧 **Automatic scrobbling** from Yandex Music
-- ⚡ **Instant track detection** (no manual actions)
-- 🔄 **Reliable delivery**
+- **Automatic scrobbling** from Yandex Music
+- **Instant track detection** (no manual actions)
+- **Reliable delivery**
   - queue + retry if something fails
   - no lost scrobbles
-- 🧠 **Smart fallback modes**
+- **Smart fallback modes**
   - works with or without desktop app
-- 🖥 **Desktop companion (optional)**
+- **Desktop companion (optional)**
   - enhanced stability
   - background processing
-- 🧩 **Browser extension UI**
+- **Browser extension UI**
   - current track info
   - connection status
   - quick actions (reload / retry / focus)
@@ -80,7 +80,7 @@ The system is designed to handle real-world issues like:
 
 ---
 
-## 🧩 Modes
+## Modes
 
 ### Standalone
 
@@ -93,7 +93,7 @@ The system is designed to handle real-world issues like:
 
 ---
 
-## ⚠️ Notes
+## Notes
 
 - Designed specifically for Yandex Music
 - Requires a Last.fm account and API credentials
