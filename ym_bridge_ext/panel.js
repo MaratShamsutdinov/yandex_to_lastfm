@@ -834,7 +834,7 @@ $("copyBtn").addEventListener("click", async () => {
 
 $("installCompanionBtn")?.addEventListener("click", () => {
     chrome.tabs.create({
-        url: "https://github.com/Maratej/yandex_to_lastfm"
+        url: "https://github.com/MaratShamsutdinov/yandex_to_lastfm/releases"
     });
 });
 

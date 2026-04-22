@@ -501,8 +501,7 @@
     }
 
     async function openDesktopAppPage(settings, defaults) {
-        const desktop = getDesktopBridgeSettings(settings, defaults);
-        const target = sanitizeUrl(desktop.serverUrl) || DEFAULT_DESKTOP_BASE_URL;
+        const target = "https://github.com/MaratShamsutdinov/yandex_to_lastfm/releases/latest";
 
         await chrome.tabs.create({ url: target, active: true });
 

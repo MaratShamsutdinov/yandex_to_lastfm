@@ -87,7 +87,7 @@ The system is designed to handle real-world issues like:
 
 ## 📸 Preview
 
-![Preview](yandex_music.png)
+![Preview](ym-bridge-ui-preview.png)
 
 ---
 
