@@ -1,5 +1,7 @@
 # --- build artifacts ---
 /target/
+/release/
+/legacy/
 /dist/
 /build/
 /out/

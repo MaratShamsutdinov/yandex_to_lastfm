@@ -19,7 +19,7 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 ## Preview
 
 <p align="center">
-  <img src="ym-bridge-ui-preview.png" style="max-width: 900px; width: 100%;" alt="Yandex Music → Last.fm Bridge UI">
+  <img src="ym_bridge_ext/assets/ym-bridge-preview.png" style="max-width: 900px; width: 100%;" alt="Yandex Music → Last.fm Bridge UI">
 </p>
 
 ---
