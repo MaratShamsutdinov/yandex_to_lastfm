@@ -7,10 +7,12 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 ## Download
 
 - **Desktop app:** GitHub Releases
+
+> Releases: **[Download desktop app](https://github.com/MaratShamsutdinov/yandex_to_lastfm/releases)**
+
 - **Browser extension:** Chrome Web Store or manual install from `ym_bridge_ext`
 
-> Releases: `https://github.com/<your-username>/<repo-name>/releases`
-> Extension: `<chrome-web-store-link-or-add-later>`
+> Extension: **[Download extension (.zip)](https://github.com/MaratShamsutdinov/yandex_to_lastfm/releases)**
 
 ---
 
