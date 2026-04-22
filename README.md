@@ -16,6 +16,12 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 ---
 
+## 📸 Preview
+
+![Preview](ym-bridge-ui-preview.png)
+
+---
+
 ## ✨ Features
 
 - 🎧 **Automatic scrobbling** from Yandex Music
@@ -82,12 +88,6 @@ The system is designed to handle real-world issues like:
 
 - Uses local bridge (`127.0.0.1`)
 - More stable and resilient
-
----
-
-## 📸 Preview
-
-![Preview](ym-bridge-ui-preview.png)
 
 ---
 
