@@ -1,0 +1,345 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>YM Bridge Settings</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171b21;
+      --panel-2: #11161b;
+      --border: #2b3139;
+      --text: #f3f5f7;
+      --muted: #97a3af;
+      --ok: #7ee787;
+      --bad: #ff7b72;
+      --accent: #2d7ef7;
+      --accent-2: #39424c;
+      --warn: #d29922;
+      --input: #0f1317;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 24px auto;
+      max-width: 860px;
+      padding: 0 16px 32px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, sans-serif;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+    }
+
+    .subhead {
+      color: var(--muted);
+      margin-bottom: 22px;
+      line-height: 1.5;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+
+    .cardTitle {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .cardHint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .grid3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: #c9d1d9;
+      font-size: 14px;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="password"],
+    textarea {
+      width: 100%;
+      padding: 10px;
+      background: var(--input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 14px;
+    }
+
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    .radioRow {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .check {
+      margin-bottom: 12px;
+    }
+
+    .actionsRow {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: var(--accent-2);
+    }
+
+    button.ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .pill.ok { color: var(--ok); }
+    .pill.bad { color: var(--bad); }
+    .pill.warn { color: var(--warn); }
+
+    .hidden { display: none; }
+
+    .footerBar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    #status {
+      color: var(--ok);
+      font-size: 14px;
+    }
+
+    #lastfmValidateStatus {
+      margin-top: 10px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 720px) {
+      .grid2, .grid3 {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>YM Bridge Settings</h1>
+  <div class="subhead">
+    Configure how the extension delivers Yandex Music playback to Last.fm.
+  </div>
+
+  <div class="card">
+    <div class="footerBar">
+      <div class="actionsRow" style="margin-top:0;">
+        <button id="saveBtn">Save settings</button>
+        <button id="reloadStateBtn" class="secondary">Reload current state</button>
+        <button id="importFromCompanionBtn" class="ghost">Import from desktop companion</button>
+      </div>
+      <div id="status"></div>
+    </div>
+
+    <div id="companionImportHint" class="cardHint hidden" style="margin-top:12px; margin-bottom:0;">
+      Desktop companion is alive and already has Last.fm data. You can import it with one click.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="cardTitle">Mode</div>
+    <div class="cardHint">
+      Standalone sends directly to Last.fm. Desktop companion keeps the localhost bridge workflow.
+    </div>
+
+    <div class="radioRow">
+      <label><input type="radio" name="mode" id="modeStandalone" value="standalone"> Standalone</label>
+      <label><input type="radio" name="mode" id="modeDesktopBridge" value="desktop_bridge"> Desktop companion</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="cardTitle">Last.fm account</div>
+    <div class="cardHint">
+      These credentials are stored locally in extension storage. Validate once to get a session key, then reconnect if needed.
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label for="lastfmApiKey">API Key</label>
+        <input id="lastfmApiKey" type="text">
+      </div>
+      <div>
+        <label for="lastfmApiSecret">API Secret</label>
+        <input id="lastfmApiSecret" type="text">
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label for="lastfmUsername">Username</label>
+        <input id="lastfmUsername" type="text">
+      </div>
+      <div>
+        <label for="lastfmPassword">Password</label>
+        <input id="lastfmPassword" type="password">
+      </div>
+    </div>
+
+    <div class="actionsRow">
+      <button id="validateLastfmBtn" class="secondary">Validate connection</button>
+      <button id="reconnectLastfmBtn" class="secondary">Reconnect session</button>
+      <button id="clearSessionBtn" class="ghost">Clear session key</button>
+      <button id="openLastfmApiBtn" class="ghost">Open Last.fm API page</button>
+    </div>
+
+    <div style="margin-top:12px;">
+      <span id="lastfmSessionPill" class="pill">Session: unknown</span>
+    </div>
+
+    <div id="lastfmValidateStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="cardTitle">How to get Last.fm API data</div>
+    <div class="cardHint">
+      Use the same values as in WinApp:
+      <br>1) Open the Last.fm API account page
+      <br>2) Create an API account
+      <br>3) Copy API Key and API Secret into the fields above
+      <br>4) Use your normal Last.fm username and password
+      <br><br>
+      Suggested values:
+      <br>App name: <b>YaMusic Last.fm Popup</b>
+      <br>Callback URL: <b>Empty</b>
+      <br>Homepage: <b>http://127.0.0.1</b>
+    </div>
+  </div>
+
+  <details class="card" open>
+    <summary class="cardTitle" style="cursor:pointer;">Delivery settings</summary>
+    <div class="cardHint" style="margin-top:12px;">
+      Tune what gets sent and how the local queue behaves during retries.
+    </div>
+
+    <div class="check">
+      <label><input id="sendAlbum" type="checkbox"> Send album</label>
+    </div>
+    <div class="check">
+      <label><input id="sendDuration" type="checkbox"> Send duration</label>
+    </div>
+    <div class="check">
+      <label><input id="debugLogs" type="checkbox"> Enable debug logs</label>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label for="maxQueue">Max queue length</label>
+        <input id="maxQueue" type="number" min="1" max="1000">
+      </div>
+      <div>
+        <label for="maxRetries">Max retries</label>
+        <input id="maxRetries" type="number" min="0" max="100">
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label for="baseRetryMs">Base retry ms</label>
+        <input id="baseRetryMs" type="number" min="100" max="60000">
+      </div>
+      <div>
+        <label for="maxRetryMs">Max retry ms</label>
+        <input id="maxRetryMs" type="number" min="100" max="120000">
+      </div>
+    </div>
+  </details>
+
+  <details class="card hidden" id="desktopBridgeCard" open>
+    <summary class="cardTitle" style="cursor:pointer;">Desktop companion</summary>
+    <div class="cardHint" style="margin-top:12px;">
+      Used only in desktop companion mode. The extension will healthcheck these localhost targets.
+    </div>
+
+    <label for="serverUrl">Primary server URL</label>
+    <input id="serverUrl" type="text" placeholder="http://127.0.0.1:5000/">
+
+    <div class="check">
+      <label><input id="autoDiscover" type="checkbox"> Auto-discover localhost endpoints</label>
+    </div>
+
+    <label for="candidateUrls">Candidate URLs (one per line)</label>
+    <textarea id="candidateUrls"></textarea>
+
+    <div class="grid2">
+      <div>
+        <label for="healthcheckIntervalMs">Healthcheck interval ms</label>
+        <input id="healthcheckIntervalMs" type="number" min="1000" max="300000">
+      </div>
+      <div>
+        <label for="connectTimeoutMs">Connect timeout ms</label>
+        <input id="connectTimeoutMs" type="number" min="500" max="60000">
+      </div>
+    </div>
+  </details>
+
+  <script src="options.js"></script>
+</body>
+</html>

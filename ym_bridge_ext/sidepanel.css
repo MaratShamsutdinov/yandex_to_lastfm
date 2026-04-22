@@ -1,0 +1,23 @@
+.companionHint {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+.companionHint.hidden {
+    display: none;
+}
+
+button.small {
+    padding: 4px 10px;
+    font-size: 11px;
+}

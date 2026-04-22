@@ -1,0 +1,48 @@
+# --- build artifacts ---
+/target/
+/dist/
+/build/
+/out/
+/bin/
+/obj/
+
+# --- generated bundles / packs ---
+/_packs/
+
+# --- local runtime data just in case ---
+config.json
+pending_scrobbles.json
+yamusic_lastfm_popup/
+*.db
+*.sqlite
+*.log
+
+# --- release / packaging artifacts ---
+*.zip
+*.rar
+*.7z
+*.crx
+*.xpi
+*.msi
+
+# --- Windows junk ---
+Thumbs.db
+Desktop.ini
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+.vs/
+*.code-workspace
+
+# --- Node / frontend junk, if it appears later ---
+node_modules/
+
+# --- Python junk, if helper scripts appear later ---
+__pycache__/
+*.pyc
+
+# --- env / secrets ---
+.env
+.env.*
+!.env.example

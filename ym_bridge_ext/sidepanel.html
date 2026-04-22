@@ -1,0 +1,420 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>YM Bridge Panel</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <style>
+    :root {
+      --bg: #111315;
+      --card: #1b1f23;
+      --card-2: #171b1f;
+      --border: #2a3036;
+      --muted: #9aa4af;
+      --text: #f3f3f3;
+      --ok: #7ee787;
+      --warn: #e3b341;
+      --bad: #ff7b72;
+      --accent: #2d7ef7;
+      --accent-2: #39424c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 18px;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(45, 126, 247, 0.06), transparent 28%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--card), var(--card-2));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .heroCard {
+      transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+    }
+
+    .heroCard.ok {
+      background:
+        radial-gradient(circle at top left, rgba(126, 231, 135, 0.12), rgba(126, 231, 135, 0) 58%),
+        linear-gradient(180deg, var(--card), var(--card-2));
+      border-color: rgba(126, 231, 135, 0.22);
+      box-shadow:
+        0 8px 22px rgba(0, 0, 0, 0.12),
+        0 0 20px rgba(126, 231, 135, 0.06);
+    }
+
+    .heroCard.accent {
+      background:
+        radial-gradient(circle at top left, rgba(45, 126, 247, 0.14), rgba(45, 126, 247, 0) 58%),
+        linear-gradient(180deg, var(--card), var(--card-2));
+      border-color: rgba(45, 126, 247, 0.24);
+      box-shadow:
+        0 8px 22px rgba(0, 0, 0, 0.12),
+        0 0 20px rgba(45, 126, 247, 0.08);
+    }
+
+    .heroCard.danger {
+      background:
+        radial-gradient(circle at top left, rgba(255, 123, 114, 0.14), rgba(255, 123, 114, 0) 58%),
+        linear-gradient(180deg, var(--card), var(--card-2));
+      border-color: rgba(255, 123, 114, 0.24);
+      box-shadow:
+        0 8px 22px rgba(0, 0, 0, 0.12),
+        0 0 20px rgba(255, 123, 114, 0.08);
+    }
+
+    .trackCardHost {
+      background:
+        radial-gradient(
+          circle at top left,
+          rgba(var(--track-rgb, 255, 255, 255), 0.22),
+          rgba(var(--track-rgb, 255, 255, 255), 0.00) 60%
+        ),
+        linear-gradient(180deg, var(--card), var(--card-2));
+      transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+      box-shadow:
+        0 10px 26px rgba(0, 0, 0, 0.18),
+        0 0 22px rgba(var(--track-rgb, 255, 255, 255), 0.10);
+    }
+
+    .heroTitle {
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 0 6px 0;
+      line-height: 1.2;
+    }
+
+    .heroHint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      margin-bottom: 10px;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      border: 1px solid var(--border);
+      background: #12161a;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.2;
+    }
+
+    .chip.ok {
+      color: var(--ok);
+      border-color: rgba(126, 231, 135, 0.25);
+    }
+
+    .chip.warn {
+      color: var(--warn);
+      border-color: rgba(227, 179, 65, 0.25);
+    }
+
+    .chip.bad {
+      color: var(--bad);
+      border-color: rgba(255, 123, 114, 0.25);
+    }
+
+    .primaryActionWrap {
+      margin-bottom: 10px;
+    }
+
+    .primaryActionBtn {
+      width: 100%;
+      background: var(--accent);
+      color: white;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.2;
+      transition: background 120ms ease, transform 60ms ease, box-shadow 160ms ease;
+      visibility: hidden;
+    }
+
+    .primaryActionBtn.ready {
+      visibility: visible;
+    }
+
+    .primaryActionBtn.accent {
+      background: var(--accent);
+    }
+
+    .primaryActionBtn.neutral {
+      background: #39424c;
+    }
+
+    .primaryActionBtn.ok {
+      background: #1f8f4e;
+    }
+
+    .primaryActionBtn.danger {
+      background: #a12a2a;
+    }
+
+    @keyframes reloadPulse {
+      0% { box-shadow: 0 0 0 rgba(45, 126, 247, 0.00); }
+      50% {
+        box-shadow:
+          0 0 0 1px rgba(45, 126, 247, 0.18),
+          0 0 22px rgba(45, 126, 247, 0.22),
+          0 0 42px rgba(45, 126, 247, 0.10);
+      }
+      100% { box-shadow: 0 0 0 rgba(45, 126, 247, 0.00); }
+    }
+
+    .primaryActionBtn.pulse {
+      animation: reloadPulse 1.8s ease-in-out infinite;
+    }
+
+    .secondaryActions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .secondaryActions > button.wide {
+      grid-column: 1 / -1;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    button.secondary {
+      background: var(--accent-2);
+    }
+
+    button.ghost {
+      background: #222830;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .trackCard {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .cover {
+      width: 84px;
+      height: 84px;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #0f1317;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+      transition: box-shadow 160ms ease, transform 160ms ease;
+    }
+
+    .cover.hasImage {
+      box-shadow:
+        0 10px 26px rgba(0, 0, 0, 0.34),
+        0 0 26px rgba(var(--track-rgb, 255, 255, 255), 0.32),
+        0 0 42px rgba(var(--track-rgb, 255, 255, 255), 0.14);
+    }
+
+    .cover img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .metaArtist {
+      font-size: 14px;
+      color: #d7dee5;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .metaTrack {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.25;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .metaAlbum {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      word-break: break-word;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 6px 8px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .k {
+      color: var(--muted);
+    }
+
+    .v {
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .secondaryActions button[disabled] {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    details {
+      border-radius: 12px;
+    }
+
+    summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+      outline: none;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0e1114;
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid #252b31;
+      font-size: 11px;
+      max-height: 220px;
+      overflow: auto;
+      margin: 8px 0 0 0;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="stack">
+    <div class="card heroCard" id="heroCard">
+      <div class="heroTitle" id="statusSummary">—</div>
+      <div class="heroHint" id="statusHint">—</div>
+
+      <div class="chips">
+        <div class="chip" id="chipDesktop">Desktop app: —</div>
+        <div class="chip" id="chipTab">Yandex tab: —</div>
+        <div class="chip" id="chipMeta">Metadata: —</div>
+        <div class="chip" id="chipQueue">Queue: —</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="primaryActionWrap">
+        <button id="primaryActionBtn" class="primaryActionBtn">—</button>
+      </div>
+
+      <div class="secondaryActions" id="secondaryActions">
+        <button id="reloadYmBtn" class="secondary">Reload tab</button>
+        <button id="focusYmBtn" class="secondary">Focus tab</button>
+
+        <button id="retryBtn" class="secondary hidden">Retry queue</button>
+        <button id="optionsBtn" class="secondary">Extension settings</button>
+
+        <button id="appPageBtn" class="ghost">Desktop companion</button>
+        <button id="copyBtn" class="ghost">Copy diagnostics</button>
+      </div>
+    </div>
+
+    <div class="card trackCardHost" id="trackCardHost">
+      <div class="trackCard">
+        <div class="cover" id="coverBox">
+          <span class="muted">No cover</span>
+        </div>
+
+        <div>
+          <div class="metaArtist" id="artistText">—</div>
+          <div class="metaTrack" id="trackText">—</div>
+          <div class="metaAlbum" id="albumText">—</div>
+            <div class="kv">
+            <div class="k" id="transportLabel">Delivery target</div>
+            <div class="v" id="serverUrl">—</div>
+
+            <div class="k" id="lastSuccessLabel">Last delivery</div>
+            <div class="v" id="lastSuccess">—</div>
+
+            <div class="k" id="lastErrorLabel">Last error</div>
+            <div class="v" id="lastError">—</div>
+            </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="companionHint" class="companionHint hidden">
+      <span>Advanced desktop features available</span>
+      <button id="installCompanionBtn" class="ghost small">Learn more</button>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary>Advanced diagnostics</summary>
+        <pre id="diag">—</pre>
+      </details>
+    </div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>
