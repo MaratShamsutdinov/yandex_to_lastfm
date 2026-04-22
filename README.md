@@ -20,13 +20,11 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 <p align="center">
   <img src="ym-bridge-ui-preview.png" style="max-width: 900px; width: 100%;" alt="Yandex Music → Last.fm Bridge UI">
-  <br/>
-  <em>Live UI: extension + desktop companion working together</em>
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
 - 🎧 **Automatic scrobbling** from Yandex Music
 - ⚡ **Instant track detection** (no manual actions)
@@ -45,7 +43,7 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 ---
 
-## 🧱 How it works
+## How it works
 
 ```text
 Yandex Music (browser)
@@ -65,7 +63,7 @@ The system is designed to handle real-world issues like:
 
 ---
 
-## 🚀 Setup
+## Setup
 
 ### 1. Install the extension
 
@@ -103,7 +101,7 @@ The system is designed to handle real-world issues like:
 
 ---
 
-## 🛠 Tech
+## Tech
 
 - Rust (desktop app)
 - Chrome Extension (MV3)
@@ -112,7 +110,7 @@ The system is designed to handle real-world issues like:
 
 ---
 
-## 📌 Status
+## Status
 
 Actively developed.
 Feedback and ideas are welcome.
