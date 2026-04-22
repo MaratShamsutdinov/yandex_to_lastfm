@@ -8,7 +8,7 @@
         if (raw === MODE_STANDALONE) return MODE_STANDALONE;
         if (raw === MODE_DESKTOP_BRIDGE) return MODE_DESKTOP_BRIDGE;
 
-        return MODE_DESKTOP_BRIDGE;
+        return MODE_STANDALONE;
     }
 
     function getCurrentMode(settings) {

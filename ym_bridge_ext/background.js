@@ -9,7 +9,7 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_SETTINGS = {
-  mode: YMBridgeMode.MODE_DESKTOP_BRIDGE,
+  mode: YMBridgeMode.MODE_STANDALONE,
 
   desktopBridge: {
     serverUrl: "http://127.0.0.1:5000/",

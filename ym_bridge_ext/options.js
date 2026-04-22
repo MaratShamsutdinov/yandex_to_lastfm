@@ -63,7 +63,7 @@ function hasAnyLastfmData(lastfm = {}) {
 }
 
 function loadForm(settings, runtime = null) {
-    const mode = settings?.mode || "desktop_bridge";
+    const mode = settings?.mode || "standalone";
     $("modeStandalone").checked = mode === "standalone";
     $("modeDesktopBridge").checked = mode === "desktop_bridge";
 

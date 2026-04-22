@@ -398,7 +398,7 @@ function renderCover(lastTrack) {
 }
 
 function renderMetaInfo(runtime, settings) {
-    const mode = settings?.mode || "desktop_bridge";
+    const mode = settings?.mode || "standalone";
     const desktop = settings?.desktopBridge || {};
     const delivery = runtime?.delivery || {};
     const lastfm = runtime?.lastfm || {};
