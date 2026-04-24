@@ -12,7 +12,7 @@ Works via a lightweight browser extension + optional desktop companion for maxim
 
 - **Browser extension:** Chrome Web Store
 
-> Extension: **[Download extension (.zip)](https://chromewebstore.google.com/detail/cjemkikpabifhldcdkopinpejahljcin?utm_source=item-share-cb)**
+> Extension: **[Download extension](https://chromewebstore.google.com/detail/cjemkikpabifhldcdkopinpejahljcin?utm_source=item-share-cb)**
 
 ---
 
