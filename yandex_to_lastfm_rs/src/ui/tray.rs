@@ -1,7 +1,7 @@
 use crate::config::{
     TRAY_MENU_AUTOSTART_ENABLE_TEXT, TRAY_MENU_EXIT_TEXT, TRAY_MENU_INSTALL_TEXT,
     TRAY_MENU_LASTFM_SETTINGS_TEXT, TRAY_MENU_OPEN_EXTENSIONS_TEXT, TRAY_MENU_SHOW_TEXT,
-    TRAY_MENU_STATUS_NOT_DETECTED_TEXT, TRAY_MENU_VALIDATE_LASTFM_TEXT, TRAY_TOOLTIP,
+    TRAY_MENU_STATUS_NOT_DETECTED_TEXT, TRAY_TOOLTIP,
 };
 
 use tray_icon::{
@@ -31,8 +31,6 @@ pub fn build_tray() -> (
     MenuId,
     MenuId,
     MenuId,
-    MenuId,
-    MenuId,
 ) {
     let menu = Menu::new();
 
@@ -41,7 +39,6 @@ pub fn build_tray() -> (
     let open_extensions_item = MenuItem::new(TRAY_MENU_OPEN_EXTENSIONS_TEXT, true, None);
     let autostart_item = MenuItem::new(TRAY_MENU_AUTOSTART_ENABLE_TEXT, true, None);
     let lastfm_settings_item = MenuItem::new(TRAY_MENU_LASTFM_SETTINGS_TEXT, true, None);
-    let validate_lastfm_item = MenuItem::new(TRAY_MENU_VALIDATE_LASTFM_TEXT, true, None);
     let show_item = MenuItem::new(TRAY_MENU_SHOW_TEXT, true, None);
     let quit_item = MenuItem::new(TRAY_MENU_EXIT_TEXT, true, None);
 
@@ -54,8 +51,6 @@ pub fn build_tray() -> (
     menu.append(&autostart_item).expect("append autostart menu");
     menu.append(&lastfm_settings_item)
         .expect("append lastfm settings menu");
-    menu.append(&validate_lastfm_item)
-        .expect("append validate lastfm menu");
     menu.append(&show_item).expect("append show menu");
     menu.append(&PredefinedMenuItem::separator())
         .expect("append separator");
@@ -65,8 +60,6 @@ pub fn build_tray() -> (
     let open_extensions_id = open_extensions_item.id().clone();
     let autostart_id = autostart_item.id().clone();
     let lastfm_settings_id = lastfm_settings_item.id().clone();
-    let validate_lastfm_id = validate_lastfm_item.id().clone();
-    let show_id = show_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     let tray = TrayIconBuilder::new()
@@ -85,8 +78,6 @@ pub fn build_tray() -> (
         open_extensions_id,
         autostart_id,
         lastfm_settings_id,
-        validate_lastfm_id,
-        show_id,
         quit_id,
     )
 }

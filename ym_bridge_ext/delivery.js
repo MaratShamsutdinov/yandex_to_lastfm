@@ -285,24 +285,18 @@
     }
 
     async function ensureStandaloneSession(settings, hooks) {
-        const cfg = settings?.lastfm || {};
+        const cfg = globalThis.YMBridgeLastfmApi.normalizeLastfmSettings(settings?.lastfm || {});
+        const sessionKey = String(cfg.sessionKey || "").trim();
 
-        if (cfg.sessionKey && String(cfg.sessionKey).trim()) {
-            return String(cfg.sessionKey).trim();
+        if (!cfg.apiKey || !cfg.apiSecret) {
+            throw new Error("Last.fm API Key / API Secret missing");
         }
 
-        const result = await globalThis.YMBridgeLastfmApi.validateCredentials(cfg);
-
-        settings.lastfm = {
-            ...(settings.lastfm || {}),
-            sessionKey: result.sessionKey
-        };
-
-        if (hooks?.saveSettings) {
-            await hooks.saveSettings();
+        if (!sessionKey) {
+            throw new Error("Last.fm session key missing");
         }
 
-        return result.sessionKey;
+        return sessionKey;
     }
 
     async function deliverNowPlayingStandalone(envelope, runtimeState, settings, hooks) {

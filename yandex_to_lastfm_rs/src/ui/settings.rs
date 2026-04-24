@@ -1,936 +1,985 @@
-use crate::app_config::{
-    clear_app_config, default_app_config, load_app_config, save_app_config, AppConfig, LastfmConfig,
-};
-use crate::server::validate_lastfm_credentials_quick;
-
-use std::ffi::c_void;
-use std::mem::zeroed;
-use std::process::Command;
-use std::ptr::{null, null_mut};
-
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, DeleteObject, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-    DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HFONT, OUT_DEFAULT_PRECIS,
-};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, MessageBoxW,
-    RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_LEFT, ES_PASSWORD, GWLP_USERDATA, HMENU,
-    IDC_ARROW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MSG, SW_SHOW, WM_CLOSE, WM_COMMAND,
-    WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_OVERLAPPED, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE,
+use crate::app_config::{save_app_config, AppConfig, LastfmConfig};
+use crate::server::{
+    apply_lastfm_config_hot, finish_lastfm_browser_auth, start_lastfm_browser_auth,
 };
 
-#[link(name = "user32")]
-unsafe extern "system" {
-    fn EnableWindow(hwnd: HWND, benable: i32) -> i32;
-    fn SetFocus(hwnd: HWND) -> HWND;
-    fn UpdateWindow(hwnd: HWND) -> i32;
+use eframe::egui;
+use tokio::time::sleep;
+use winit::platform::windows::EventLoopBuilderExtWindows;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const SETTINGS_WINDOW_TITLE: &str = "Last.fm account";
+const AUTH_WAIT_SECS: u64 = 60;
+
+const WINDOW_W: f32 = 612.0;
+const WINDOW_H: f32 = 620.0;
+
+const CONTENT_W: f32 = 566.0;
+const CARD_INNER_W: f32 = CONTENT_W - 34.0;
+
+const BUTTON_W: f32 = 278.0;
+const BUTTON_H: f32 = 42.0;
+
+enum AuthWorkerEvent {
+    Connected { session_key: String },
+    Failed { error: String },
 }
 
-const SETTINGS_WINDOW_CLASS_NAME: &str = "YaMusicLastFmSettingsWindowClass";
-const SETTINGS_WINDOW_TITLE: &str = "YaMusic → Last.fm Settings";
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NoticeTone {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
-const ID_EDIT_API_KEY: isize = 1001;
-const ID_EDIT_API_SECRET: isize = 1002;
-const ID_EDIT_USERNAME: isize = 1003;
-const ID_EDIT_PASSWORD: isize = 1004;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusTone {
+    Connected,
+    Disconnected,
+    Waiting,
+    Error,
+}
 
-const ID_BUTTON_SAVE: isize = 2001;
-const ID_BUTTON_CANCEL: isize = 2002;
-const ID_BUTTON_TEST: isize = 2003;
-const ID_BUTTON_OPEN_API: isize = 2004;
-const ID_BUTTON_CLEAR: isize = 2005;
+struct StatusView {
+    title: String,
+    detail: String,
+    tone: StatusTone,
+}
 
-const WINDOW_W: i32 = 520;
-const WINDOW_H: i32 = 540;
-
-const CONTENT_LEFT: i32 = 22;
-const LABEL_X: i32 = 22;
-const EDIT_X: i32 = 160;
-const EDIT_W: i32 = 320;
-const ROW_H: i32 = 26;
-
-const HEADER_Y: i32 = 18;
-const SUBHEADER_Y: i32 = 46;
-const HELP_Y: i32 = 66;
-
-const TOP_Y: i32 = 280;
-const ROW_STEP_Y: i32 = 46;
-
-const BUTTON_W: i32 = 100;
-const BUTTON_H: i32 = 30;
-const BUTTON_GAP: i32 = 8;
-const BUTTON_Y: i32 = 455;
-
-struct SettingsWindowState {
+struct LastfmSettingsApp {
     initial_config: AppConfig,
-    result_config: Option<AppConfig>,
+    result_config: Arc<Mutex<Option<AppConfig>>>,
 
-    title_label: HWND,
-    subtitle_label: HWND,
-    help_label_1: HWND,
-    help_label_2: HWND,
-    help_label_3: HWND,
-    help_label_4: HWND,
-    help_label_5: HWND,
-    help_label_6: HWND,
+    auth_pending: bool,
+    auth_deadline: Option<Instant>,
+    auth_rx: Option<mpsc::Receiver<AuthWorkerEvent>>,
+    auth_cancel_flag: Option<Arc<AtomicBool>>,
 
-    label_api_key: HWND,
-    label_api_secret: HWND,
-    label_username: HWND,
-    label_password: HWND,
+    notice: String,
+    notice_tone: NoticeTone,
 
-    edit_api_key: HWND,
-    edit_api_secret: HWND,
-    edit_username: HWND,
-    edit_password: HWND,
-
-    button_save: HWND,
-    button_cancel: HWND,
-    button_test: HWND,
-    button_open_api: HWND,
-    button_clear: HWND,
-
-    ui_font: HFONT,
-    title_font: HFONT,
+    last_auth_error: Option<String>,
+    close_requested: bool,
 }
 
-impl SettingsWindowState {
-    fn new(initial_config: AppConfig) -> Self {
-        Self {
-            initial_config,
-            result_config: None,
+impl LastfmSettingsApp {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_config: AppConfig,
+        result_config: Arc<Mutex<Option<AppConfig>>>,
+    ) -> Self {
+        configure_egui(&cc.egui_ctx);
 
-            title_label: null_mut(),
-            subtitle_label: null_mut(),
-            help_label_1: null_mut(),
-            help_label_2: null_mut(),
-            help_label_3: null_mut(),
-            help_label_4: null_mut(),
-            help_label_5: null_mut(),
-            help_label_6: null_mut(),
+        let mut app = Self {
+            initial_config: initial_config.normalized(),
+            result_config,
+            auth_pending: false,
+            auth_deadline: None,
+            auth_rx: None,
+            auth_cancel_flag: None,
+            notice: String::new(),
+            notice_tone: NoticeTone::Info,
+            last_auth_error: None,
+            close_requested: false,
+        };
 
-            label_api_key: null_mut(),
-            label_api_secret: null_mut(),
-            label_username: null_mut(),
-            label_password: null_mut(),
+        app.set_initial_notice();
+        app
+    }
 
-            edit_api_key: null_mut(),
-            edit_api_secret: null_mut(),
-            edit_username: null_mut(),
-            edit_password: null_mut(),
+    fn set_initial_notice(&mut self) {
+        if self.is_connected() {
+            self.notice =
+                "Connected. You can reconnect to renew access or switch account.".to_string();
+            self.notice_tone = NoticeTone::Success;
+        } else {
+            self.notice =
+                "Not connected. Connect Last.fm to enable companion scrobbling.".to_string();
+            self.notice_tone = NoticeTone::Info;
+        }
+    }
 
-            button_save: null_mut(),
-            button_cancel: null_mut(),
-            button_test: null_mut(),
-            button_open_api: null_mut(),
-            button_clear: null_mut(),
+    fn is_connected(&self) -> bool {
+        self.initial_config.normalized().has_companion_auth()
+    }
 
-            ui_font: null_mut(),
-            title_font: null_mut(),
+    fn config_for_browser_auth(&self) -> Result<AppConfig, String> {
+        let normalized = self.initial_config.normalized();
+
+        if normalized.lastfm.api_key.trim().is_empty()
+            || normalized.lastfm.api_secret.trim().is_empty()
+        {
+            return Err("Last.fm API Key / API Secret missing".to_string());
+        }
+
+        Ok(AppConfig {
+            lastfm: LastfmConfig {
+                api_key: normalized.lastfm.api_key,
+                api_secret: normalized.lastfm.api_secret,
+                username: String::new(),
+                password: String::new(),
+                session_key: normalized.lastfm.session_key,
+                synced_from_extension: false,
+                auth_token: normalized.lastfm.auth_token,
+                auth_token_requested_at: normalized.lastfm.auth_token_requested_at,
+            },
+            launch_on_startup: normalized.launch_on_startup,
+        }
+        .normalized())
+    }
+
+    fn begin_browser_auth(&mut self) {
+        if self.auth_pending {
+            return;
+        }
+
+        let auth_config = match self.config_for_browser_auth() {
+            Ok(config) => config,
+            Err(err) => {
+                self.last_auth_error = Some(err.clone());
+                self.notice = clean_error_message(&err);
+                self.notice_tone = NoticeTone::Error;
+                return;
+            }
+        };
+
+        let (tx, rx) = mpsc::channel::<AuthWorkerEvent>();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let worker_cancel_flag = Arc::clone(&cancel_flag);
+
+        self.auth_pending = true;
+        self.auth_deadline = Some(Instant::now() + Duration::from_secs(AUTH_WAIT_SECS));
+        self.auth_rx = Some(rx);
+        self.auth_cancel_flag = Some(cancel_flag);
+        self.last_auth_error = None;
+        self.notice =
+            "Waiting for Last.fm approval. Complete approval in the browser window.".to_string();
+        self.notice_tone = NoticeTone::Warning;
+
+        thread::spawn(move || {
+            let result = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("tokio runtime error: {e}"))
+                .and_then(|rt| {
+                    rt.block_on(async move {
+                        let (token, _auth_url) =
+                            start_lastfm_browser_auth(&auth_config.lastfm).await?;
+
+                        wait_for_lastfm_browser_auth(
+                            &auth_config.lastfm,
+                            &token,
+                            worker_cancel_flag,
+                        )
+                        .await
+                    })
+                });
+
+            let event = match result {
+                Ok(session_key) => AuthWorkerEvent::Connected { session_key },
+                Err(error) => AuthWorkerEvent::Failed { error },
+            };
+
+            let _ = tx.send(event);
+        });
+    }
+
+    fn cancel_waiting(&mut self) {
+        if !self.auth_pending {
+            return;
+        }
+
+        self.cancel_auth_worker();
+
+        self.notice =
+            "Waiting cancelled. No changes were saved. Click Connect/Reconnect to try again."
+                .to_string();
+        self.notice_tone = NoticeTone::Warning;
+        self.last_auth_error = None;
+    }
+
+    fn timeout_waiting(&mut self) {
+        if !self.auth_pending {
+            return;
+        }
+
+        self.cancel_auth_worker();
+
+        let err = format!(
+            "Approval timed out after {} seconds. Click Connect/Reconnect to try again.",
+            AUTH_WAIT_SECS
+        );
+
+        self.last_auth_error = Some(err.clone());
+        self.notice = err;
+        self.notice_tone = NoticeTone::Error;
+    }
+
+    fn cancel_auth_worker(&mut self) {
+        if let Some(flag) = self.auth_cancel_flag.take() {
+            flag.store(true, Ordering::SeqCst);
+        }
+
+        self.auth_pending = false;
+        self.auth_deadline = None;
+        self.auth_rx = None;
+    }
+
+    fn poll_auth_worker(&mut self) {
+        let Some(rx) = self.auth_rx.take() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(AuthWorkerEvent::Connected { session_key }) => {
+                self.auth_pending = false;
+                self.auth_deadline = None;
+                self.auth_cancel_flag = None;
+                self.finish_connected(session_key);
+            }
+            Ok(AuthWorkerEvent::Failed { error }) => {
+                self.auth_pending = false;
+                self.auth_deadline = None;
+                self.auth_cancel_flag = None;
+
+                let clean = clean_error_message(&error);
+                self.last_auth_error = Some(clean.clone());
+                self.notice = clean;
+                self.notice_tone = NoticeTone::Error;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.auth_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.auth_pending = false;
+                self.auth_deadline = None;
+                self.auth_cancel_flag = None;
+
+                let err = "Last.fm auth worker stopped unexpectedly.".to_string();
+                self.last_auth_error = Some(err.clone());
+                self.notice = err;
+                self.notice_tone = NoticeTone::Error;
+            }
+        }
+    }
+
+    fn update_auth_deadline(&mut self) {
+        if !self.auth_pending {
+            return;
+        }
+
+        let Some(deadline) = self.auth_deadline else {
+            return;
+        };
+
+        if Instant::now() >= deadline {
+            self.timeout_waiting();
+        }
+    }
+
+    fn finish_connected(&mut self, session_key: String) {
+        let mut config = match self.config_for_browser_auth() {
+            Ok(config) => config,
+            Err(err) => {
+                let clean = clean_error_message(&err);
+                self.last_auth_error = Some(clean.clone());
+                self.notice = clean;
+                self.notice_tone = NoticeTone::Error;
+                return;
+            }
+        };
+
+        let session_key = session_key.trim().to_string();
+
+        if session_key.is_empty() {
+            let err = "Last.fm returned an empty session key.".to_string();
+            self.last_auth_error = Some(err.clone());
+            self.notice = err;
+            self.notice_tone = NoticeTone::Error;
+            return;
+        }
+
+        config.lastfm.session_key = session_key;
+        config.lastfm.auth_token.clear();
+        config.lastfm.auth_token_requested_at = 0;
+
+        if let Err(err) = save_app_config(&config) {
+            let clean = clean_error_message(&err);
+            self.last_auth_error = Some(clean.clone());
+            self.notice = clean;
+            self.notice_tone = NoticeTone::Error;
+            return;
+        }
+
+        self.initial_config = config.normalized();
+
+        if let Ok(mut result) = self.result_config.lock() {
+            *result = Some(self.initial_config.clone());
+        }
+
+        match apply_lastfm_config_hot_blocking(&self.initial_config) {
+            Ok(()) => {
+                self.last_auth_error = None;
+                self.notice = "Connected. Session key saved and applied to the running companion."
+                    .to_string();
+                self.notice_tone = NoticeTone::Success;
+            }
+            Err(err) => {
+                let clean = clean_error_message(&err);
+                self.last_auth_error = Some(clean.clone());
+                self.notice = format!("Session key was saved, but hot-apply failed: {}", clean);
+                self.notice_tone = NoticeTone::Error;
+            }
+        }
+    }
+
+    fn disconnect(&mut self) {
+        if self.auth_pending || !self.is_connected() {
+            return;
+        }
+
+        let mut config = self.initial_config.normalized();
+
+        let preserved_api_key = config.lastfm.api_key.clone();
+        let preserved_api_secret = config.lastfm.api_secret.clone();
+
+        config.lastfm = LastfmConfig {
+            api_key: preserved_api_key,
+            api_secret: preserved_api_secret,
+            username: String::new(),
+            password: String::new(),
+            session_key: String::new(),
+            synced_from_extension: false,
+            auth_token: String::new(),
+            auth_token_requested_at: 0,
+        };
+
+        if let Err(err) = save_app_config(&config) {
+            let clean = clean_error_message(&err);
+            self.last_auth_error = Some(clean.clone());
+            self.notice = clean;
+            self.notice_tone = NoticeTone::Error;
+            return;
+        }
+
+        self.initial_config = config.normalized();
+
+        if let Ok(mut result) = self.result_config.lock() {
+            *result = Some(self.initial_config.clone());
+        }
+
+        match apply_lastfm_config_hot_blocking(&self.initial_config) {
+            Ok(()) => {
+                self.last_auth_error = None;
+                self.notice =
+                    "Disconnected. Local Last.fm session was cleared and runtime state updated."
+                        .to_string();
+                self.notice_tone = NoticeTone::Success;
+            }
+            Err(err) => {
+                let clean = clean_error_message(&err);
+                self.last_auth_error = Some(clean.clone());
+                self.notice = format!("Session was cleared, but hot-apply failed: {}", clean);
+                self.notice_tone = NoticeTone::Error;
+            }
+        }
+    }
+
+    fn status_view(&self) -> StatusView {
+        if self.auth_pending {
+            return StatusView {
+                title: "Waiting for approval".to_string(),
+                detail: format!(
+                    "Approve access in the browser. WinApp will finish connection automatically. {}s left.",
+                    self.remaining_secs()
+                ),
+                tone: StatusTone::Waiting,
+            };
+        }
+
+        if let Some(err) = self.last_auth_error.as_ref() {
+            return StatusView {
+                title: "Error".to_string(),
+                detail: err.clone(),
+                tone: StatusTone::Error,
+            };
+        }
+
+        if self.is_connected() {
+            return StatusView {
+                title: "Connected".to_string(),
+                detail: "Last.fm account is connected through a saved session key.".to_string(),
+                tone: StatusTone::Connected,
+            };
+        }
+
+        StatusView {
+            title: "Not connected".to_string(),
+            detail: "No Last.fm session key is saved in WinApp.".to_string(),
+            tone: StatusTone::Disconnected,
+        }
+    }
+
+    fn remaining_secs(&self) -> u64 {
+        let Some(deadline) = self.auth_deadline else {
+            return 0;
+        };
+
+        deadline
+            .saturating_duration_since(Instant::now())
+            .as_secs()
+            .min(AUTH_WAIT_SECS)
+    }
+
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.auth_pending {
+            self.cancel_waiting();
+        }
+
+        self.close_requested = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn handle_native_close_request(&mut self, ctx: &egui::Context) {
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+
+        if close_requested && self.auth_pending && !self.close_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_close(ctx);
+        }
+    }
+
+    fn draw(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(bg_color())
+                    .inner_margin(egui::Margin::same(0)),
+            )
+            .show(ctx, |ui| {
+                paint_background(ui);
+
+                ui.add_space(20.0);
+
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(22))
+                    .show(ui, |ui| {
+                        self.draw_header(ui);
+                        ui.add_space(18.0);
+
+                        self.draw_status_card(ui);
+                        ui.add_space(12.0);
+
+                        self.draw_help_card(ui);
+                        ui.add_space(16.0);
+
+                        self.draw_actions(ui, ctx);
+                        ui.add_space(12.0);
+
+                        self.draw_notice(ui);
+                    });
+            });
+    }
+
+    fn draw_header(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Yandex Music -> Last.fm")
+                    .size(28.0)
+                    .strong()
+                    .color(text_color()),
+            );
+
+            ui.add_space(4.0);
+
+            ui.label(
+                egui::RichText::new(
+                    "Desktop companion account connection. No password is entered in WinApp.",
+                )
+                .size(14.0)
+                .color(mut_color()),
+            );
+        });
+    }
+
+    fn draw_status_card(&self, ui: &mut egui::Ui) {
+        let status = self.status_view();
+        let accent = status_color(status.tone);
+
+        ui.set_width(CONTENT_W);
+
+        card_frame(accent).show(ui, |ui| {
+            ui.set_width(CARD_INNER_W);
+
+            ui.horizontal(|ui| {
+                chip_frame(accent).show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(status_icon(status.tone))
+                            .size(19.0)
+                            .strong()
+                            .color(accent),
+                    );
+                });
+
+                ui.add_space(10.0);
+
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(status.title)
+                            .size(20.0)
+                            .strong()
+                            .color(text_color()),
+                    );
+
+                    ui.add_space(5.0);
+
+                    ui.label(
+                        egui::RichText::new(status.detail)
+                            .size(13.0)
+                            .color(mut_color()),
+                    );
+                });
+            });
+        });
+    }
+
+    fn draw_help_card(&self, ui: &mut egui::Ui) {
+        ui.set_width(CONTENT_W);
+
+        card_frame(accent_color()).show(ui, |ui| {
+            ui.set_width(CARD_INNER_W);
+
+            ui.label(
+                egui::RichText::new("How connection works")
+                    .size(16.0)
+                    .strong()
+                    .color(text_color()),
+            );
+
+            ui.add_space(10.0);
+
+            help_row(ui, "1", "Click Connect/Reconnect");
+            help_row(ui, "2", "Your browser will open the Last.fm approval page");
+            help_row(
+                ui,
+                "3",
+                "Approve access — WinApp will finish connection automatically",
+            );
+        });
+    }
+
+    fn draw_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let connected = self.is_connected();
+
+        ui.horizontal(|ui| {
+            let connect_text = if connected {
+                "Reconnect Last.fm"
+            } else {
+                "Connect Last.fm"
+            };
+
+            let connect_enabled = !self.auth_pending;
+            if action_button(ui, connect_text, connect_enabled, accent_color()).clicked() {
+                self.begin_browser_auth();
+            }
+
+            let cancel_enabled = self.auth_pending;
+            if action_button(ui, "Cancel waiting", cancel_enabled, warn_color()).clicked() {
+                self.cancel_waiting();
+            }
+        });
+
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            let disconnect_enabled = connected && !self.auth_pending;
+            if action_button(ui, "Disconnect", disconnect_enabled, danger_color()).clicked() {
+                self.disconnect();
+            }
+
+            let close_enabled = true;
+            if action_button(ui, "Close", close_enabled, neutral_button_color()).clicked() {
+                self.request_close(ctx);
+            }
+        });
+    }
+
+    fn draw_notice(&self, ui: &mut egui::Ui) {
+        let color = notice_color(self.notice_tone);
+
+        ui.set_width(CONTENT_W);
+
+        egui::Frame::new()
+            .fill(tint(color, 0.08))
+            .stroke(egui::Stroke::new(1.0, tint(color, 0.22)))
+            .corner_radius(egui::CornerRadius::same(14))
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.set_width(CONTENT_W - 22.0);
+
+                ui.label(
+                    egui::RichText::new(&self.notice)
+                        .size(12.0)
+                        .color(tint(color, 0.95)),
+                );
+            });
+    }
+}
+
+impl Drop for LastfmSettingsApp {
+    fn drop(&mut self) {
+        if let Some(flag) = self.auth_cancel_flag.take() {
+            flag.store(true, Ordering::SeqCst);
         }
     }
 }
 
-pub fn prompt_lastfm_settings_if_missing() -> Result<AppConfig, String> {
-    if let Some(config) = load_app_config()? {
-        if config.is_complete() {
-            return Ok(config);
+impl eframe::App for LastfmSettingsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_native_close_request(ctx);
+        self.poll_auth_worker();
+        self.update_auth_deadline();
+        self.draw(ctx);
+
+        if self.auth_pending {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(700));
         }
     }
-
-    let initial_config = load_app_config()?.unwrap_or_else(default_app_config);
-
-    let maybe_config = show_lastfm_settings_window(initial_config)?;
-    let config = maybe_config.ok_or_else(|| "Last.fm settings were not provided".to_string())?;
-
-    save_app_config(&config)?;
-    Ok(config)
 }
 
 pub fn show_lastfm_settings_window(initial_config: AppConfig) -> Result<Option<AppConfig>, String> {
-    unsafe {
-        let hinstance: HINSTANCE = GetModuleHandleW(null());
-        if hinstance.is_null() {
-            return Err("GetModuleHandleW failed".to_string());
-        }
+    let result_config = Arc::new(Mutex::new(None::<AppConfig>));
+    let result_for_app = Arc::clone(&result_config);
 
-        register_settings_window_class(hinstance);
+    let native_options = eframe::NativeOptions {
+        viewport: {
+            let mut viewport = egui::ViewportBuilder::default()
+                .with_title(SETTINGS_WINDOW_TITLE)
+                .with_inner_size(egui::vec2(WINDOW_W, WINDOW_H))
+                .with_min_inner_size(egui::vec2(WINDOW_W, WINDOW_H))
+                .with_resizable(false);
 
-        let state_ptr = Box::into_raw(Box::new(SettingsWindowState::new(initial_config)));
-
-        let class_name = to_wide_null(SETTINGS_WINDOW_CLASS_NAME);
-        let window_title = to_wide_null(SETTINGS_WINDOW_TITLE);
-
-        let hwnd = CreateWindowExW(
-            WS_EX_DLGMODALFRAME,
-            class_name.as_ptr(),
-            window_title.as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_CLIPCHILDREN,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            WINDOW_W,
-            WINDOW_H,
-            null_mut(),
-            null_mut::<c_void>() as HMENU,
-            hinstance,
-            state_ptr as *const c_void,
-        );
-
-        if hwnd.is_null() {
-            let _ = Box::from_raw(state_ptr);
-            return Err("CreateWindowExW failed".to_string());
-        }
-
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
-
-        let mut msg: MSG = zeroed();
-
-        while IsWindow(hwnd) != 0 {
-            let ret = GetMessageW(&mut msg, null_mut(), 0, 0);
-            if ret <= 0 {
-                break;
+            if let Some(icon) = load_window_icon() {
+                viewport = viewport.with_icon(Arc::new(icon));
             }
 
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-
-        let state = Box::from_raw(state_ptr);
-        Ok(state.result_config)
-    }
-}
-
-unsafe extern "system" fn settings_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_NCCREATE => {
-            let createstruct = lparam as *const CREATESTRUCTW;
-            if createstruct.is_null() {
-                return 0;
-            }
-
-            let lp_create_params = (*createstruct).lpCreateParams as *mut SettingsWindowState;
-            if lp_create_params.is_null() {
-                return 0;
-            }
-
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, lp_create_params as isize);
-            1
-        }
-        WM_CREATE => {
-            if let Err(err) = create_settings_controls(hwnd) {
-                show_error_box("Create settings controls", &err);
-                DestroyWindow(hwnd);
-                return 0;
-            }
-
-            fill_controls_from_initial_config(hwnd);
-            focus_first_field(hwnd);
-            0
-        }
-        WM_COMMAND => {
-            let command_id = loword(wparam) as isize;
-
-            if command_id == ID_BUTTON_TEST {
-                handle_test_button(hwnd);
-                return 0;
-            }
-
-            if command_id == ID_BUTTON_SAVE {
-                handle_save_button(hwnd);
-                return 0;
-            }
-
-            if command_id == ID_BUTTON_CANCEL {
-                DestroyWindow(hwnd);
-                return 0;
-            }
-
-            if command_id == ID_BUTTON_OPEN_API {
-                open_lastfm_api_page();
-                return 0;
-            }
-
-            if command_id == ID_BUTTON_CLEAR {
-                handle_clear_button(hwnd);
-                return 0;
-            }
-
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-        WM_CLOSE => {
-            DestroyWindow(hwnd);
-            0
-        }
-        WM_DESTROY => 0,
-        WM_NCDESTROY => {
-            let state_ptr = get_state_ptr(hwnd);
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-
-                if !state.ui_font.is_null() {
-                    DeleteObject(state.ui_font as *mut c_void);
-                    state.ui_font = null_mut();
-                }
-
-                if !state.title_font.is_null() {
-                    DeleteObject(state.title_font as *mut c_void);
-                    state.title_font = null_mut();
-                }
-            }
-
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
-}
-
-unsafe fn register_settings_window_class(hinstance: HINSTANCE) {
-    let class_name = to_wide_null(SETTINGS_WINDOW_CLASS_NAME);
-
-    let wnd_class = WNDCLASSW {
-        style: 0,
-        lpfnWndProc: Some(settings_wndproc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: hinstance,
-        hIcon: null_mut(),
-        hCursor: LoadCursorW(null_mut(), IDC_ARROW),
-        hbrBackground: 16 as *mut c_void,
-        lpszMenuName: null(),
-        lpszClassName: class_name.as_ptr(),
-    };
-
-    RegisterClassW(&wnd_class);
-}
-
-unsafe fn create_settings_controls(hwnd: HWND) -> Result<(), String> {
-    let state_ptr = get_state_ptr(hwnd);
-    if state_ptr.is_null() {
-        return Err("settings state is null".to_string());
-    }
-
-    let state = &mut *state_ptr;
-
-    state.ui_font = create_ui_font(18, FW_NORMAL as i32)?;
-    state.title_font = create_ui_font(24, 600)?;
-
-    state.title_label = create_label(
-        hwnd,
-        "Connect your Last.fm account",
-        CONTENT_LEFT,
-        HEADER_Y,
-        320,
-        24,
-    )?;
-    state.subtitle_label = create_label(
-        hwnd,
-        "These credentials are stored locally on this PC.",
-        CONTENT_LEFT,
-        SUBHEADER_Y,
-        420,
-        18,
-    )?;
-
-    state.help_label_1 = create_label(
-        hwnd,
-        "1) Open https://www.last.fm/api/account/create",
-        CONTENT_LEFT,
-        HELP_Y,
-        460,
-        18,
-    )?;
-
-    state.button_open_api = create_button(
-        hwnd,
-        "Open Last.fm API page",
-        ID_BUTTON_OPEN_API,
-        CONTENT_LEFT + 18,
-        HELP_Y + 24,
-        220,
-        28,
-    )?;
-
-    state.help_label_2 = create_label(
-        hwnd,
-        "2) Create an API account and copy API Key and API Secret",
-        CONTENT_LEFT,
-        HELP_Y + 60,
-        460,
-        18,
-    )?;
-
-    state.help_label_3 = create_label(
-        hwnd,
-        "Suggested values:",
-        CONTENT_LEFT,
-        HELP_Y + 86,
-        460,
-        18,
-    )?;
-
-    let sv_y1 = HELP_Y + 112;
-    let sv_y2 = HELP_Y + 142;
-    let sv_y3 = HELP_Y + 172;
-
-    create_label(hwnd, "App name:", CONTENT_LEFT, sv_y1, 120, 18)?;
-    create_label(hwnd, "Callback URL:", CONTENT_LEFT, sv_y2, 120, 18)?;
-    create_label(hwnd, "Homepage:", CONTENT_LEFT, sv_y3, 120, 18)?;
-
-    state.help_label_4 = create_edit(hwnd, 0, CONTENT_LEFT + 120, sv_y1 - 2, 300, 22, false, true)?;
-    set_edit_text(state.help_label_4, "YaMusic Last.fm Popup");
-
-    state.help_label_5 = create_edit(hwnd, 0, CONTENT_LEFT + 120, sv_y2 - 2, 300, 22, false, true)?;
-    set_edit_text(state.help_label_5, "Empty");
-
-    state.help_label_6 = create_edit(hwnd, 0, CONTENT_LEFT + 120, sv_y3 - 2, 300, 22, false, true)?;
-    set_edit_text(state.help_label_6, "http://127.0.0.1");
-
-    state.label_api_key = create_label(hwnd, "API Key", LABEL_X, TOP_Y + 3, 120, 20)?;
-    state.label_api_secret =
-        create_label(hwnd, "API Secret", LABEL_X, TOP_Y + ROW_STEP_Y + 3, 120, 20)?;
-    state.label_username = create_label(
-        hwnd,
-        "Username",
-        LABEL_X,
-        TOP_Y + ROW_STEP_Y * 2 + 3,
-        120,
-        20,
-    )?;
-    state.label_password = create_label(
-        hwnd,
-        "Password",
-        LABEL_X,
-        TOP_Y + ROW_STEP_Y * 3 + 3,
-        120,
-        20,
-    )?;
-
-    state.edit_api_key = create_edit(
-        hwnd,
-        ID_EDIT_API_KEY,
-        EDIT_X,
-        TOP_Y,
-        EDIT_W,
-        ROW_H,
-        false,
-        false,
-    )?;
-    state.edit_api_secret = create_edit(
-        hwnd,
-        ID_EDIT_API_SECRET,
-        EDIT_X,
-        TOP_Y + ROW_STEP_Y,
-        EDIT_W,
-        ROW_H,
-        false,
-        false,
-    )?;
-    state.edit_username = create_edit(
-        hwnd,
-        ID_EDIT_USERNAME,
-        EDIT_X,
-        TOP_Y + ROW_STEP_Y * 2,
-        EDIT_W,
-        ROW_H,
-        false,
-        false,
-    )?;
-    state.edit_password = create_edit(
-        hwnd,
-        ID_EDIT_PASSWORD,
-        EDIT_X,
-        TOP_Y + ROW_STEP_Y * 3,
-        EDIT_W,
-        ROW_H,
-        true,
-        false,
-    )?;
-
-    let buttons_total_w = BUTTON_W * 4 + BUTTON_GAP * 3;
-    let buttons_x = WINDOW_W - buttons_total_w - 36;
-
-    state.button_save = create_button(
-        hwnd,
-        "Save",
-        ID_BUTTON_SAVE,
-        buttons_x,
-        BUTTON_Y,
-        BUTTON_W,
-        BUTTON_H,
-    )?;
-    state.button_test = create_button(
-        hwnd,
-        "Test",
-        ID_BUTTON_TEST,
-        buttons_x + (BUTTON_W + BUTTON_GAP),
-        BUTTON_Y,
-        BUTTON_W,
-        BUTTON_H,
-    )?;
-    state.button_clear = create_button(
-        hwnd,
-        "Clear",
-        ID_BUTTON_CLEAR,
-        buttons_x + (BUTTON_W + BUTTON_GAP) * 2,
-        BUTTON_Y,
-        BUTTON_W,
-        BUTTON_H,
-    )?;
-    state.button_cancel = create_button(
-        hwnd,
-        "Cancel",
-        ID_BUTTON_CANCEL,
-        buttons_x + (BUTTON_W + BUTTON_GAP) * 3,
-        BUTTON_Y,
-        BUTTON_W,
-        BUTTON_H,
-    )?;
-
-    apply_font(state.title_label, state.title_font);
-    apply_font(state.subtitle_label, state.ui_font);
-
-    apply_font(state.help_label_1, state.ui_font);
-    apply_font(state.help_label_2, state.ui_font);
-    apply_font(state.help_label_3, state.ui_font);
-    apply_font(state.help_label_4, state.ui_font);
-    apply_font(state.help_label_5, state.ui_font);
-    apply_font(state.help_label_6, state.ui_font);
-
-    apply_font(state.button_open_api, state.ui_font);
-
-    apply_font(state.label_api_key, state.ui_font);
-    apply_font(state.label_api_secret, state.ui_font);
-    apply_font(state.label_username, state.ui_font);
-    apply_font(state.label_password, state.ui_font);
-
-    apply_font(state.edit_api_key, state.ui_font);
-    apply_font(state.edit_api_secret, state.ui_font);
-    apply_font(state.edit_username, state.ui_font);
-    apply_font(state.edit_password, state.ui_font);
-
-    apply_font(state.button_save, state.ui_font);
-    apply_font(state.button_cancel, state.ui_font);
-    apply_font(state.button_test, state.ui_font);
-    apply_font(state.button_clear, state.ui_font);
-
-    Ok(())
-}
-
-unsafe fn create_ui_font(height: i32, weight: i32) -> Result<HFONT, String> {
-    let face_name = to_wide_null("Segoe UI");
-
-    let font = CreateFontW(
-        height,
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET as u32,
-        OUT_DEFAULT_PRECIS as u32,
-        CLIP_DEFAULT_PRECIS as u32,
-        CLEARTYPE_QUALITY as u32,
-        (DEFAULT_PITCH | FF_DONTCARE) as u32,
-        face_name.as_ptr(),
-    );
-
-    if font.is_null() {
-        return Err("CreateFontW failed".to_string());
-    }
-
-    Ok(font)
-}
-
-unsafe fn apply_font(hwnd: HWND, font: HFONT) {
-    if hwnd.is_null() || font.is_null() {
-        return;
-    }
-
-    SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
-}
-
-unsafe fn fill_controls_from_initial_config(hwnd: HWND) {
-    let state_ptr = get_state_ptr(hwnd);
-    if state_ptr.is_null() {
-        return;
-    }
-
-    let state = &*state_ptr;
-    let normalized = state.initial_config.normalized();
-
-    set_edit_text(state.edit_api_key, &normalized.lastfm.api_key);
-    set_edit_text(state.edit_api_secret, &normalized.lastfm.api_secret);
-    set_edit_text(state.edit_username, &normalized.lastfm.username);
-    set_edit_text(state.edit_password, &normalized.lastfm.password);
-}
-
-unsafe fn focus_first_field(hwnd: HWND) {
-    let state_ptr = get_state_ptr(hwnd);
-    if state_ptr.is_null() {
-        return;
-    }
-
-    let state = &*state_ptr;
-    if !state.edit_api_key.is_null() {
-        SetFocus(state.edit_api_key);
-    }
-}
-
-unsafe fn handle_test_button(hwnd: HWND) {
-    set_buttons_enabled(hwnd, false);
-
-    let result = match read_config_from_controls(hwnd) {
-        Ok(config) => {
-            let rt = tokio::runtime::Runtime::new();
-            match rt {
-                Ok(rt) => {
-                    rt.block_on(async { validate_lastfm_credentials_quick(&config.lastfm).await })
-                }
-                Err(e) => Err(format!("tokio runtime error: {e}")),
-            }
-        }
-        Err(e) => Err(e),
-    };
-
-    set_buttons_enabled(hwnd, true);
-
-    match result {
-        Ok(_) => show_info_box("Last.fm validation", "Connection OK."),
-        Err(e) => show_error_box("Last.fm validation", &e),
-    }
-}
-
-unsafe fn handle_save_button(hwnd: HWND) {
-    set_buttons_enabled(hwnd, false);
-
-    let final_result = match read_config_from_controls(hwnd) {
-        Ok(config) => {
-            let rt = tokio::runtime::Runtime::new();
-            match rt {
-                Ok(rt) => {
-                    match rt
-                        .block_on(async { validate_lastfm_credentials_quick(&config.lastfm).await })
-                    {
-                        Ok(_) => Ok(config),
-                        Err(e) => Err(e),
-                    }
-                }
-                Err(e) => Err(format!("tokio runtime error: {e}")),
-            }
-        }
-        Err(e) => Err(e),
-    };
-
-    set_buttons_enabled(hwnd, true);
-
-    match final_result {
-        Ok(config) => {
-            let state_ptr = get_state_ptr(hwnd);
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-                state.result_config = Some(config);
-            }
-
-            DestroyWindow(hwnd);
-        }
-        Err(e) => {
-            show_error_box("Save Last.fm settings", &e);
-        }
-    }
-}
-
-unsafe fn handle_clear_button(hwnd: HWND) {
-    set_buttons_enabled(hwnd, false);
-
-    let result = clear_app_config();
-
-    if result.is_ok() {
-        let state_ptr = get_state_ptr(hwnd);
-        if !state_ptr.is_null() {
-            let state = &mut *state_ptr;
-
-            set_edit_text(state.edit_api_key, "");
-            set_edit_text(state.edit_api_secret, "");
-            set_edit_text(state.edit_username, "");
-            set_edit_text(state.edit_password, "");
-
-            state.initial_config = default_app_config();
-            state.result_config = None;
-        }
-    }
-
-    set_buttons_enabled(hwnd, true);
-
-    match result {
-        Ok(_) => show_info_box(
-            "Clear Last.fm settings",
-            "Saved WinApp Last.fm data cleared.",
-        ),
-        Err(e) => show_error_box("Clear Last.fm settings", &e),
-    }
-}
-
-unsafe fn read_config_from_controls(hwnd: HWND) -> Result<AppConfig, String> {
-    let state_ptr = get_state_ptr(hwnd);
-    if state_ptr.is_null() {
-        return Err("settings state is null".to_string());
-    }
-
-    let state = &*state_ptr;
-
-    let config = AppConfig {
-        lastfm: LastfmConfig {
-            api_key: get_edit_text(state.edit_api_key)?,
-            api_secret: get_edit_text(state.edit_api_secret)?,
-            username: get_edit_text(state.edit_username)?,
-            password: get_edit_text(state.edit_password)?,
-            session_key: String::new(),
-            synced_from_extension: false,
+            viewport
         },
-        launch_on_startup: state.initial_config.launch_on_startup,
-    }
-    .normalized();
+        centered: true,
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_any_thread(true);
+        })),
+        ..Default::default()
+    };
 
-    if !config.has_full_credentials() && !config.has_companion_auth() {
-        return Err(
-            "Please provide either full Last.fm credentials or a synced companion session."
-                .to_string(),
+    eframe::run_native(
+        SETTINGS_WINDOW_TITLE,
+        native_options,
+        Box::new(move |cc| {
+            let app: Box<dyn eframe::App> =
+                Box::new(LastfmSettingsApp::new(cc, initial_config, result_for_app));
+
+            Ok::<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>>(app)
+        }),
+    )
+    .map_err(|e| format!("settings window error: {e}"))?;
+
+    let result = result_config
+        .lock()
+        .map(|guard| (*guard).clone())
+        .unwrap_or(None);
+
+    Ok(result)
+}
+
+async fn wait_for_lastfm_browser_auth(
+    lastfm_config: &LastfmConfig,
+    token: &str,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<String, String> {
+    for _ in 0..AUTH_WAIT_SECS {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Err("Last.fm approval was cancelled.".to_string());
+        }
+
+        match finish_lastfm_browser_auth(lastfm_config, token).await {
+            Ok(session_key) => return Ok(session_key),
+            Err(err) if is_lastfm_auth_waiting_error(&err) => {
+                sleep(Duration::from_secs(1)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(format!(
+        "Approval timed out after {} seconds. Click Connect/Reconnect to try again.",
+        AUTH_WAIT_SECS
+    ))
+}
+
+fn load_window_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../../assets/app_128.png");
+    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+
+    Some(egui::IconData {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    })
+}
+
+fn is_lastfm_auth_waiting_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+
+    e.contains("unauthorized token")
+        || e.contains("\"error\":14")
+        || e.contains("\"error\": 14")
+        || e.contains("error 14")
+}
+
+fn apply_lastfm_config_hot_blocking(config: &AppConfig) -> Result<(), String> {
+    let config = config.clone();
+
+    tokio::runtime::Runtime::new()
+        .map_err(|e| format!("tokio runtime error: {e}"))?
+        .block_on(async move { apply_lastfm_config_hot(&config).await })
+}
+
+fn clean_error_message(err: &str) -> String {
+    let text = err
+        .replace("Error: ", "")
+        .replace("error: ", "")
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        "Unknown error".to_string()
+    } else {
+        text
+    }
+}
+
+fn configure_egui(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+
+    style.visuals.dark_mode = true;
+    style.visuals.window_fill = bg_color();
+    style.visuals.panel_fill = bg_color();
+    style.visuals.override_text_color = Some(text_color());
+
+    style.visuals.widgets.inactive.bg_fill = neutral_button_color();
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text_color());
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(64, 74, 88);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text_color());
+    style.visuals.widgets.active.bg_fill = accent_color();
+    style.visuals.widgets.noninteractive.bg_fill = card_color();
+
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(16.0, 10.0);
+
+    ctx.set_style(style);
+}
+
+fn paint_background(ui: &mut egui::Ui) {
+    let rect = ui.max_rect();
+    let painter = ui.painter();
+
+    painter.rect_filled(rect, egui::CornerRadius::same(0), bg_color());
+
+    let glow_1 = egui::Rect::from_min_size(
+        rect.left_top() + egui::vec2(-90.0, -120.0),
+        egui::vec2(360.0, 260.0),
+    );
+
+    painter.rect_filled(
+        glow_1,
+        egui::CornerRadius::same(120),
+        egui::Color32::from_rgba_unmultiplied(45, 126, 247, 26),
+    );
+
+    let glow_2 = egui::Rect::from_min_size(
+        rect.right_top() + egui::vec2(-250.0, 50.0),
+        egui::vec2(320.0, 260.0),
+    );
+
+    painter.rect_filled(
+        glow_2,
+        egui::CornerRadius::same(120),
+        egui::Color32::from_rgba_unmultiplied(126, 231, 135, 14),
+    );
+}
+
+fn card_frame(accent: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(card_color())
+        .stroke(egui::Stroke::new(1.0, tint(accent, 0.25)))
+        .corner_radius(egui::CornerRadius::same(18))
+        .inner_margin(egui::Margin::same(16))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+        })
+}
+
+fn chip_frame(accent: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(tint(accent, 0.12))
+        .stroke(egui::Stroke::new(1.0, tint(accent, 0.30)))
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::same(10))
+}
+
+fn help_row(ui: &mut egui::Ui, index: &str, text: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 26.0), egui::Sense::hover());
+
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(9),
+            egui::Color32::from_rgb(31, 38, 48),
         );
-    }
 
-    Ok(config)
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(9),
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(54, 64, 78)),
+            egui::StrokeKind::Inside,
+        );
+
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            index,
+            egui::FontId::proportional(12.0),
+            accent_color(),
+        );
+
+        ui.add_space(8.0);
+
+        ui.label(egui::RichText::new(text).size(13.0).color(text_color()));
+    });
 }
 
-unsafe fn set_buttons_enabled(hwnd: HWND, enabled: bool) {
-    let state_ptr = get_state_ptr(hwnd);
-    if state_ptr.is_null() {
-        return;
-    }
-
-    let state = &*state_ptr;
-    let enabled_flag = if enabled { 1 } else { 0 };
-
-    if !state.button_save.is_null() {
-        EnableWindow(state.button_save, enabled_flag);
-    }
-    if !state.button_cancel.is_null() {
-        EnableWindow(state.button_cancel, enabled_flag);
-    }
-    if !state.button_test.is_null() {
-        EnableWindow(state.button_test, enabled_flag);
-    }
-    if !state.button_clear.is_null() {
-        EnableWindow(state.button_clear, enabled_flag);
-    }
-}
-
-unsafe fn create_label(
-    parent: HWND,
+fn action_button(
+    ui: &mut egui::Ui,
     text: &str,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) -> Result<HWND, String> {
-    let class_name = to_wide_null("STATIC");
-    let text_w = to_wide_null(text);
+    enabled: bool,
+    fill: egui::Color32,
+) -> egui::Response {
+    let button = egui::Button::new(
+        egui::RichText::new(text)
+            .size(14.0)
+            .strong()
+            .color(text_color()),
+    )
+    .fill(if enabled {
+        fill
+    } else {
+        egui::Color32::from_rgb(40, 45, 52)
+    })
+    .stroke(egui::Stroke::new(
+        1.0,
+        if enabled {
+            tint(fill, 0.55)
+        } else {
+            egui::Color32::from_rgb(54, 60, 68)
+        },
+    ))
+    .corner_radius(egui::CornerRadius::same(13))
+    .min_size(egui::vec2(BUTTON_W, BUTTON_H));
 
-    let hwnd = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        text_w.as_ptr(),
-        WS_CHILD | WS_VISIBLE,
-        x,
-        y,
-        w,
-        h,
-        parent,
-        null_mut(),
-        null_mut(),
-        null_mut(),
-    );
-
-    if hwnd.is_null() {
-        return Err(format!("CreateWindowExW STATIC failed for '{text}'"));
-    }
-
-    Ok(hwnd)
+    ui.add_enabled(enabled, button)
 }
 
-unsafe fn create_edit(
-    parent: HWND,
-    control_id: isize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    password: bool,
-    readonly: bool,
-) -> Result<HWND, String> {
-    let class_name = to_wide_null("EDIT");
-    let empty_text = to_wide_null("");
-
-    let style = WS_CHILD
-        | WS_VISIBLE
-        | WS_TABSTOP
-        | WS_BORDER
-        | (ES_LEFT as u32)
-        | (ES_AUTOHSCROLL as u32)
-        | if password { ES_PASSWORD as u32 } else { 0 }
-        | if readonly { 0x0800 } else { 0 }; // ES_READONLY
-
-    let hwnd = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        class_name.as_ptr(),
-        empty_text.as_ptr(),
-        style,
-        x,
-        y,
-        w,
-        h,
-        parent,
-        control_id as HMENU,
-        null_mut(),
-        null_mut(),
-    );
-
-    if hwnd.is_null() {
-        return Err(format!(
-            "CreateWindowExW EDIT failed for control id {control_id}"
-        ));
-    }
-
-    Ok(hwnd)
-}
-
-unsafe fn create_button(
-    parent: HWND,
-    text: &str,
-    control_id: isize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) -> Result<HWND, String> {
-    let class_name = to_wide_null("BUTTON");
-    let text_w = to_wide_null(text);
-
-    let hwnd = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        text_w.as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        x,
-        y,
-        w,
-        h,
-        parent,
-        control_id as HMENU,
-        null_mut(),
-        null_mut(),
-    );
-
-    if hwnd.is_null() {
-        return Err(format!("CreateWindowExW BUTTON failed for '{text}'"));
-    }
-
-    Ok(hwnd)
-}
-
-unsafe fn get_edit_text(hwnd: HWND) -> Result<String, String> {
-    if hwnd.is_null() {
-        return Err("edit control handle is null".to_string());
-    }
-
-    let len = GetWindowTextLengthW(hwnd);
-    if len < 0 {
-        return Err("GetWindowTextLengthW failed".to_string());
-    }
-
-    let mut buf = vec![0u16; len as usize + 1];
-    let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
-    if copied < 0 {
-        return Err("GetWindowTextW failed".to_string());
-    }
-
-    Ok(String::from_utf16_lossy(&buf[..copied as usize]))
-}
-
-unsafe fn set_edit_text(hwnd: HWND, value: &str) {
-    if hwnd.is_null() {
-        return;
-    }
-
-    let value_w = to_wide_null(value);
-    SetWindowTextW(hwnd, value_w.as_ptr());
-}
-
-unsafe fn get_state_ptr(hwnd: HWND) -> *mut SettingsWindowState {
-    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState
-}
-
-fn loword(value: usize) -> u16 {
-    (value & 0xFFFF) as u16
-}
-
-fn to_wide_null(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn show_info_box(title: &str, text: &str) {
-    let title_w = to_wide_null(title);
-    let text_w = to_wide_null(text);
-
-    unsafe {
-        MessageBoxW(
-            null_mut(),
-            text_w.as_ptr(),
-            title_w.as_ptr(),
-            MB_OK | MB_ICONINFORMATION,
-        );
+fn status_icon(tone: StatusTone) -> &'static str {
+    match tone {
+        StatusTone::Connected => "✓",
+        StatusTone::Disconnected => "•",
+        StatusTone::Waiting => "…",
+        StatusTone::Error => "!",
     }
 }
 
-fn show_error_box(title: &str, text: &str) {
-    let title_w = to_wide_null(title);
-    let text_w = to_wide_null(text);
+// fn status_pill_text(tone: StatusTone) -> &'static str {
+//     match tone {
+//         StatusTone::Connected => "green",
+//         StatusTone::Disconnected => "gray",
+//         StatusTone::Waiting => "yellow",
+//         StatusTone::Error => "red",
+//     }
+// }
 
-    unsafe {
-        MessageBoxW(
-            null_mut(),
-            text_w.as_ptr(),
-            title_w.as_ptr(),
-            MB_OK | MB_ICONERROR,
-        );
+fn status_color(tone: StatusTone) -> egui::Color32 {
+    match tone {
+        StatusTone::Connected => ok_color(),
+        StatusTone::Disconnected => muted_status_color(),
+        StatusTone::Waiting => warn_color(),
+        StatusTone::Error => danger_color(),
     }
 }
 
-fn open_lastfm_api_page() {
-    let url = "https://www.last.fm/api/account/create";
-
-    if Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn()
-        .is_err()
-    {
-        show_error_box(
-            "Open Last.fm API page",
-            "Could not open browser.\n\nPlease open manually:\nhttps://www.last.fm/api/account/create",
-        );
+fn notice_color(tone: NoticeTone) -> egui::Color32 {
+    match tone {
+        NoticeTone::Info => accent_color(),
+        NoticeTone::Success => ok_color(),
+        NoticeTone::Warning => warn_color(),
+        NoticeTone::Error => danger_color(),
     }
+}
+
+fn tint(color: egui::Color32, alpha: f32) -> egui::Color32 {
+    let alpha = alpha.clamp(0.0, 1.0);
+    egui::Color32::from_rgba_unmultiplied(
+        color.r(),
+        color.g(),
+        color.b(),
+        (255.0 * alpha).round() as u8,
+    )
+}
+
+fn bg_color() -> egui::Color32 {
+    egui::Color32::from_rgb(15, 17, 22)
+}
+
+fn card_color() -> egui::Color32 {
+    egui::Color32::from_rgb(23, 28, 35)
+}
+
+fn text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(243, 245, 247)
+}
+
+fn mut_color() -> egui::Color32 {
+    egui::Color32::from_rgb(151, 163, 175)
+}
+
+fn accent_color() -> egui::Color32 {
+    egui::Color32::from_rgb(45, 126, 247)
+}
+
+fn neutral_button_color() -> egui::Color32 {
+    egui::Color32::from_rgb(57, 66, 76)
+}
+
+fn ok_color() -> egui::Color32 {
+    egui::Color32::from_rgb(126, 231, 135)
+}
+
+fn warn_color() -> egui::Color32 {
+    egui::Color32::from_rgb(227, 179, 65)
+}
+
+fn danger_color() -> egui::Color32 {
+    egui::Color32::from_rgb(255, 123, 114)
+}
+
+fn muted_status_color() -> egui::Color32 {
+    egui::Color32::from_rgb(156, 166, 178)
 }

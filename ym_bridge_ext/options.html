@@ -218,36 +218,21 @@
   <div class="card">
     <div class="cardTitle">Last.fm account</div>
     <div class="cardHint">
-      These credentials are stored locally in extension storage. Validate once to get a session key, then reconnect if needed.
+      Standalone mode uses a Last.fm session key stored locally in extension storage.
+      API access is built into the extension.
+      You can connect Last.fm here, import the session from the desktop companion, or paste a session key manually.
     </div>
 
-    <div class="grid2">
-      <div>
-        <label for="lastfmApiKey">API Key</label>
-        <input id="lastfmApiKey" type="text">
-      </div>
-      <div>
-        <label for="lastfmApiSecret">API Secret</label>
-        <input id="lastfmApiSecret" type="text">
-      </div>
-    </div>
-
-    <div class="grid2">
-      <div>
-        <label for="lastfmUsername">Username</label>
-        <input id="lastfmUsername" type="text">
-      </div>
-      <div>
-        <label for="lastfmPassword">Password</label>
-        <input id="lastfmPassword" type="password">
-      </div>
+    <div>
+      <label for="lastfmSessionKey">Session Key</label>
+      <input id="lastfmSessionKey" type="text">
     </div>
 
     <div class="actionsRow">
-      <button id="validateLastfmBtn" class="secondary">Validate connection</button>
-      <button id="reconnectLastfmBtn" class="secondary">Reconnect session</button>
+      <button id="connectLastfmBtn">Connect Last.fm</button>
+      <button id="reconnectLastfmBtn" class="secondary">Reconnect</button>
       <button id="clearSessionBtn" class="ghost">Clear session key</button>
-      <button id="openLastfmApiBtn" class="ghost">Open Last.fm API page</button>
+      <button id="importFromCompanionBtn2" class="secondary">Import from desktop companion</button>
     </div>
 
     <div style="margin-top:12px;">
@@ -258,18 +243,16 @@
   </div>
 
   <div class="card">
-    <div class="cardTitle">How to get Last.fm API data</div>
+    <div class="cardTitle">Standalone Last.fm setup</div>
     <div class="cardHint">
-      Use the same values as in WinApp:
-      <br>1) Open the Last.fm API account page
-      <br>2) Create an API account
-      <br>3) Copy API Key and API Secret into the fields above
-      <br>4) Use your normal Last.fm username and password
+      For standalone mode, the extension only needs a Last.fm session key.
       <br><br>
-      Suggested values:
-      <br>App name: <b>YaMusic Last.fm Popup</b>
-      <br>Callback URL: <b>Empty</b>
-      <br>Homepage: <b>http://127.0.0.1</b>
+      The easiest path is:
+      <br>• click <b>Connect Last.fm</b> here
+      <br>• approve access in the browser
+      <br>• the session key will be saved automatically
+      <br><br>
+      You can also import the session from the desktop companion or paste a session key manually.
     </div>
   </div>
 

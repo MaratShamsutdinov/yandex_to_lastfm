@@ -58,6 +58,12 @@ pub struct IncomingTrack {
     pub page_ts: Option<i64>,
     pub reason: Option<String>,
 
+    #[serde(default)]
+    pub started_at: Option<i64>,
+
+    #[serde(default)]
+    pub scrobble_due_at: Option<i64>,
+
     pub artist: String,
     pub track: String,
     pub album: Option<String>,

@@ -5,7 +5,9 @@ use crate::config::{
     APP_FOOTER_TEXT, COVER_DOWNLOAD_TIMEOUT_MS, DOMINANT_MIN_BRIGHTNESS, DOMINANT_MIN_SATURATION,
     DOMINANT_SAMPLE_GRID, SCROBBLE_AFTER_SECS, SERVER_BIND_ADDR,
 };
-use crate::lastfm::{get_session_key, get_session_key_with_retry, scrobble, scrobble_batch};
+use crate::lastfm::{
+    get_auth_token, get_session_key, get_session_key_from_token, scrobble, scrobble_batch,
+};
 use crate::models::{
     ExtensionPingRequest, ExtensionPingResponse, ExtensionRuntimeState, HealthResponse,
     IncomingTrack, LastfmRuntimeState, PendingScrobble, PlaybackState, PopupKind, PopupPayload,
@@ -22,7 +24,9 @@ use axum::{
 };
 use reqwest::Client;
 use std::fs;
-use std::sync::Arc;
+use std::io::Write;
+use std::process::Command;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -36,6 +40,8 @@ const PENDING_BATCH_SIZE: usize = 20;
 const LASTFM_WATCHDOG_FAIL_THRESHOLD: u32 = 3;
 const LASTFM_WATCHDOG_SUCCESS_GRACE_SECS: i64 = 45;
 
+static SERVER_STATE_HANDLE: OnceLock<ServerState> = OnceLock::new();
+
 #[derive(Clone)]
 pub struct ServerState {
     pub client: Client,
@@ -48,57 +54,110 @@ pub struct ServerState {
     pub extension_status_notifier: ExtensionStatusNotifier,
 }
 
-#[derive(Clone)]
-pub struct LastfmValidationOk {
-    pub session_key: String,
-}
-
-pub async fn validate_lastfm_credentials(
+pub async fn start_lastfm_browser_auth(
     lastfm_config: &LastfmConfig,
-) -> Result<LastfmValidationOk, String> {
+) -> Result<(String, String), String> {
     let normalized = lastfm_config.normalized();
 
-    if normalized.has_companion_auth() {
-        return Ok(LastfmValidationOk {
-            session_key: normalized.session_key.clone(),
-        });
-    }
-
-    if !normalized.has_full_credentials() {
-        return Err("Last.fm config is incomplete".to_string());
+    if normalized.api_key.is_empty() || normalized.api_secret.is_empty() {
+        return Err("Last.fm API Key / API Secret missing".to_string());
     }
 
     let client = Client::builder()
         .build()
         .map_err(|e| format!("reqwest client error: {e}"))?;
 
-    let session_key = get_session_key_with_retry(&client, &normalized).await?;
+    let token = get_auth_token(&client, &normalized).await?;
+    println!("[LASTFM AUTH] TOKEN RECEIVED: {}", token);
 
-    Ok(LastfmValidationOk { session_key })
+    let auth_url = format!(
+        "https://www.last.fm/api/auth/?api_key={}&token={}",
+        normalized.api_key, token
+    );
+
+    if Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", &auth_url])
+        .spawn()
+        .is_err()
+    {
+        return Err(format!(
+            "Could not open browser automatically.\n\nOpen this link manually:\n{}",
+            auth_url
+        ));
+    }
+
+    Ok((token, auth_url))
 }
 
-pub async fn validate_lastfm_credentials_quick(
+pub async fn finish_lastfm_browser_auth(
     lastfm_config: &LastfmConfig,
-) -> Result<LastfmValidationOk, String> {
+    token: &str,
+) -> Result<String, String> {
     let normalized = lastfm_config.normalized();
 
-    if normalized.has_companion_auth() {
-        return Ok(LastfmValidationOk {
-            session_key: normalized.session_key.clone(),
-        });
+    if normalized.api_key.is_empty() || normalized.api_secret.is_empty() {
+        return Err("Last.fm API Key / API Secret missing".to_string());
     }
 
-    if !normalized.has_full_credentials() {
-        return Err("Last.fm config is incomplete".to_string());
+    println!("[LASTFM AUTH] TOKEN USED FOR SESSION: {}", token);
+
+    get_session_key_from_token(
+        &Client::builder()
+            .build()
+            .map_err(|e| format!("reqwest client error: {e}"))?,
+        &normalized,
+        token,
+    )
+    .await
+}
+
+pub async fn apply_lastfm_config_hot(config: &AppConfig) -> Result<(), String> {
+    let Some(state) = SERVER_STATE_HANDLE.get().cloned() else {
+        return Err("Server state handle is not available yet".to_string());
+    };
+
+    let normalized = config.lastfm.normalized();
+
+    {
+        let mut cfg = state.lastfm_config.lock().await;
+        *cfg = normalized.clone();
     }
 
-    let client = Client::builder()
-        .build()
-        .map_err(|e| format!("reqwest client error: {e}"))?;
+    {
+        let mut sk = state.session_key.lock().await;
+        *sk = if normalized.session_key.trim().is_empty() {
+            None
+        } else {
+            Some(normalized.session_key.trim().to_string())
+        };
+    }
 
-    let session_key = get_session_key(&client, &normalized).await?;
+    {
+        let mut lf = state.lastfm_runtime.lock().await;
 
-    Ok(LastfmValidationOk { session_key })
+        if normalized.session_key.trim().is_empty() {
+            lf.connected = false;
+            lf.last_error = Some("Last.fm session key missing".to_string());
+        } else {
+            lf.connected = true;
+            lf.last_error = None;
+            lf.error_popup_shown = false;
+            lf.watchdog_fail_count = 0;
+            lf.last_success_at = Some(unix_ts());
+        }
+    }
+
+    match flush_pending_scrobbles(&state).await {
+        Ok(n) if n > 0 => {
+            println!("[PENDING_SCROBBLES] hot-applied and flushed {}", n);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("[PENDING_SCROBBLES] hot-apply flush error: {}", e);
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -109,7 +168,10 @@ pub struct CompanionImportLastfmRequest {
 
     pub api_key: String,
     pub api_secret: String,
+
+    #[serde(default)]
     pub username: String,
+
     pub session_key: String,
 }
 
@@ -147,10 +209,31 @@ fn load_pending_scrobbles() -> Result<Vec<PendingScrobble>, String> {
     let raw = fs::read_to_string(&path)
         .map_err(|e| format!("pending scrobbles read error ({}): {e}", path.display()))?;
 
-    let parsed = serde_json::from_str::<Vec<PendingScrobble>>(&raw)
-        .map_err(|e| format!("pending scrobbles parse error ({}): {e}", path.display()))?;
+    match serde_json::from_str::<Vec<PendingScrobble>>(&raw) {
+        Ok(parsed) => Ok(parsed),
+        Err(parse_err) => {
+            let quarantine_path = path.with_extension(format!("json.corrupt.{}", unix_ts()));
 
-    Ok(parsed)
+            fs::rename(&path, &quarantine_path).map_err(|rename_err| {
+                format!(
+                    "pending scrobbles parse error ({}): {}; quarantine rename error ({}): {}",
+                    path.display(),
+                    parse_err,
+                    quarantine_path.display(),
+                    rename_err
+                )
+            })?;
+
+            eprintln!(
+                "[PENDING_SCROBBLES] corrupt file quarantined: '{}' -> '{}'; parse error: {}",
+                path.display(),
+                quarantine_path.display(),
+                parse_err
+            );
+
+            Ok(Vec::new())
+        }
+    }
 }
 
 fn save_pending_scrobbles(items: &[PendingScrobble]) -> Result<(), String> {
@@ -169,8 +252,76 @@ fn save_pending_scrobbles(items: &[PendingScrobble]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(items)
         .map_err(|e| format!("pending scrobbles serialize error: {e}"))?;
 
-    fs::write(&path, json)
-        .map_err(|e| format!("pending scrobbles write error ({}): {e}", path.display()))
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let temp_path = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), ts_ms));
+
+    {
+        let mut file = fs::File::create(&temp_path).map_err(|e| {
+            format!(
+                "pending scrobbles temp create error ({}): {e}",
+                temp_path.display()
+            )
+        })?;
+
+        file.write_all(json.as_bytes()).map_err(|e| {
+            format!(
+                "pending scrobbles temp write error ({}): {e}",
+                temp_path.display()
+            )
+        })?;
+
+        file.sync_all().map_err(|e| {
+            format!(
+                "pending scrobbles temp sync error ({}): {e}",
+                temp_path.display()
+            )
+        })?;
+    }
+
+    match fs::rename(&temp_path, &path) {
+        Ok(()) => Ok(()),
+        Err(first_rename_err) => {
+            if path.exists() {
+                fs::remove_file(&path).map_err(|remove_err| {
+                    let _ = fs::remove_file(&temp_path);
+
+                    format!(
+                        "pending scrobbles replace error ({}): rename error: {}; remove existing error: {}",
+                        path.display(),
+                        first_rename_err,
+                        remove_err
+                    )
+                })?;
+
+                fs::rename(&temp_path, &path).map_err(|second_rename_err| {
+                    let _ = fs::remove_file(&temp_path);
+
+                    format!(
+                        "pending scrobbles rename error ({} -> {}): first error: {}; second error: {}",
+                        temp_path.display(),
+                        path.display(),
+                        first_rename_err,
+                        second_rename_err
+                    )
+                })?;
+
+                Ok(())
+            } else {
+                let _ = fs::remove_file(&temp_path);
+
+                Err(format!(
+                    "pending scrobbles rename error ({} -> {}): {}",
+                    temp_path.display(),
+                    path.display(),
+                    first_rename_err
+                ))
+            }
+        }
+    }
 }
 
 fn enqueue_pending_scrobble(item: PendingScrobble) -> Result<(), String> {
@@ -704,18 +855,27 @@ pub async fn handle_companion_import_lastfm(
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
 
-    let normalized = LastfmConfig {
+    let mut normalized = LastfmConfig {
         api_key: payload.api_key.trim().to_string(),
         api_secret: payload.api_secret.trim().to_string(),
         username: payload.username.trim().to_string(),
         password: String::new(),
         session_key: payload.session_key.trim().to_string(),
         synced_from_extension: true,
+        auth_token: String::new(),
+        auth_token_requested_at: 0,
     };
+
+    let mut config = load_app_config()
+        .unwrap_or(None)
+        .unwrap_or_else(|| AppConfig::default());
+
+    if normalized.username.is_empty() {
+        normalized.username = config.lastfm.username.trim().to_string();
+    }
 
     if normalized.api_key.is_empty()
         || normalized.api_secret.is_empty()
-        || normalized.username.is_empty()
         || normalized.session_key.is_empty()
     {
         return (
@@ -729,10 +889,6 @@ pub async fn handle_companion_import_lastfm(
             }),
         );
     }
-
-    let mut config = load_app_config()
-        .unwrap_or(None)
-        .unwrap_or_else(|| AppConfig::default());
 
     config.lastfm.api_key = normalized.api_key.clone();
     config.lastfm.api_secret = normalized.api_secret.clone();
@@ -864,6 +1020,8 @@ pub async fn run_server(
         extension_status_notifier,
     };
 
+    let _ = SERVER_STATE_HANDLE.set(state.clone());
+
     let app = Router::new()
         .route("/health", get(handle_health))
         .route("/extension/ping", post(handle_extension_ping))
@@ -920,8 +1078,20 @@ pub async fn handle_track(
 
     mark_extension_seen(&state, "track").await;
 
+    let current = format!("{artist} - {track}");
+    let now = unix_ts();
+
+    let client_started_at_present = payload.started_at.is_some();
+    let started_at = sanitize_track_started_at(payload.started_at, now);
+    let scrobble_due_at = payload
+        .scrobble_due_at
+        .unwrap_or(started_at + SCROBBLE_AFTER_SECS);
+
+    let historical_due =
+        client_started_at_present && now.saturating_sub(started_at) >= SCROBBLE_AFTER_SECS;
+
     println!(
-        "[TRACK_IN] client='{}' event_type='{}' event_id='{}' artist='{}' track='{}' album='{}' duration={:?} page_url='{}'",
+        "[TRACK_IN] client='{}' event_type='{}' event_id='{}' artist='{}' track='{}' album='{}' duration={:?} started_at={} scrobble_due_at={} historical_due={} page_url='{}'",
         client_name,
         event_type,
         event_id,
@@ -929,11 +1099,71 @@ pub async fn handle_track(
         track,
         album,
         duration,
+        started_at,
+        scrobble_due_at,
+        historical_due,
         page_url
     );
 
-    let current = format!("{artist} - {track}");
-    let now = unix_ts();
+    if historical_due {
+        let pending_item = PendingScrobble {
+            artist: artist.clone(),
+            track: track.clone(),
+            album: if album.is_empty() {
+                None
+            } else {
+                Some(album.clone())
+            },
+            timestamp: started_at,
+            duration,
+            queued_at: now,
+            retry_count: 0,
+        };
+
+        if let Err(enq_err) = enqueue_pending_scrobble(pending_item) {
+            eprintln!(
+                "[PENDING_SCROBBLES] historical enqueue error => artist='{}' track='{}' err={}",
+                artist, track, enq_err
+            );
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("pending scrobble enqueue error: {enq_err}"),
+            )
+                .into_response();
+        }
+
+        println!(
+            "[PENDING_SCROBBLES] historical queued => artist='{}' track='{}' timestamp={}",
+            artist, track, started_at
+        );
+
+        let flush_state = state.clone();
+        tokio::spawn(async move {
+            match flush_pending_scrobbles(&flush_state).await {
+                Ok(n) if n > 0 => {
+                    println!(
+                        "[PENDING_SCROBBLES] historical flush started, flushed={}",
+                        n
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[PENDING_SCROBBLES] historical flush error: {}", e);
+                }
+            }
+        });
+
+        return (
+            StatusCode::OK,
+            Json(TrackAcceptedResponse {
+                ok: true,
+                accepted: true,
+                new_track: false,
+            }),
+        )
+            .into_response();
+    }
 
     let is_new_track = {
         let mut pb = state.playback.lock().await;
@@ -954,7 +1184,7 @@ pub async fn handle_track(
             } else {
                 Some(album.clone())
             };
-            pb.started_at = now;
+            pb.started_at = started_at;
             pb.scrobbled = false;
             pb.last_scrobble_error = None;
             pb.last_scrobble_error_at = None;
@@ -1071,15 +1301,6 @@ pub fn build_startup_ok_popup() -> PopupPayload {
     )
 }
 
-pub fn build_startup_error_popup(error: &str) -> PopupPayload {
-    build_status_popup(
-        PopupKind::StartupError,
-        "Last.fm",
-        "Connection not available",
-        error,
-    )
-}
-
 pub fn build_reload_needed_popup() -> PopupPayload {
     build_status_popup(
         PopupKind::ReloadNeeded,
@@ -1096,10 +1317,6 @@ pub fn build_extension_missing_popup() -> PopupPayload {
         "Start extension to continue scrobbling",
         "",
     )
-}
-
-pub fn build_lastfm_restored_popup() -> PopupPayload {
-    build_status_popup(PopupKind::StartupOk, "Last.fm", "Connection restored", "")
 }
 
 pub fn build_lastfm_runtime_error_popup(error: &str) -> PopupPayload {
@@ -1190,4 +1407,28 @@ pub fn unix_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+fn sanitize_track_started_at(value: Option<i64>, now: i64) -> i64 {
+    let Some(started_at) = value else {
+        return now;
+    };
+
+    if started_at <= 0 {
+        return now;
+    }
+
+    // Do not accept future timestamps from a buggy/stale client.
+    if started_at > now + 5 {
+        return now;
+    }
+
+    // Last.fm accepts historical scrobbles only within a bounded past window.
+    // Keep this conservative and avoid treating very old queued metadata as active playback.
+    let oldest_allowed = now - 14 * 24 * 60 * 60;
+    if started_at < oldest_allowed {
+        return now;
+    }
+
+    started_at
 }

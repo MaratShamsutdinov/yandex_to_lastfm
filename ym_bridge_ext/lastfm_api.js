@@ -1,24 +1,26 @@
 (function () {
     const API_URL = "https://ws.audioscrobbler.com/2.0/";
+    const EMBEDDED_LASTFM_API_KEY = "82486b94f8525fe02a64e11aef66da13";
+    const EMBEDDED_LASTFM_API_SECRET = "7130cd81905f53c114c96b7efe98580f";
 
     function normalizeLastfmSettings(lastfm) {
+        const rawApiKey = String(lastfm?.apiKey || "").trim();
+        const rawApiSecret = String(lastfm?.apiSecret || "").trim();
+
         return {
-            apiKey: String(lastfm?.apiKey || "").trim(),
-            apiSecret: String(lastfm?.apiSecret || "").trim(),
-            username: String(lastfm?.username || "").trim(),
-            password: String(lastfm?.password || "").trim(),
+            apiKey: rawApiKey || EMBEDDED_LASTFM_API_KEY,
+            apiSecret: rawApiSecret || EMBEDDED_LASTFM_API_SECRET,
             sessionKey: String(lastfm?.sessionKey || "").trim()
         };
     }
-
     function isLastfmConfigComplete(lastfm) {
         const v = normalizeLastfmSettings(lastfm);
-        return !!(v.apiKey && v.apiSecret && v.username && v.password);
+        return !!(v.apiKey && v.apiSecret && v.sessionKey);
     }
 
     function hasStandaloneRuntimeAuth(lastfm) {
         const v = normalizeLastfmSettings(lastfm);
-        return !!(v.apiKey && v.apiSecret && v.username && v.sessionKey);
+        return !!(v.apiKey && v.apiSecret && v.sessionKey);
     }
 
     function encodeUtf8(str) {
@@ -246,31 +248,70 @@
         return parsed;
     }
 
-    async function getSessionKey(lastfm) {
+    function buildLastfmAuthUrl(lastfm, token) {
+        const cfg = normalizeLastfmSettings(lastfm);
+        return `https://www.last.fm/api/auth/?api_key=${encodeURIComponent(cfg.apiKey)}&token=${encodeURIComponent(token)}`;
+    }
+
+    async function getAuthToken(lastfm) {
         const cfg = normalizeLastfmSettings(lastfm);
 
-        if (!isLastfmConfigComplete(cfg)) {
-            throw new Error("Last.fm config is incomplete");
+        if (!cfg.apiKey || !cfg.apiSecret) {
+            throw new Error("Last.fm API Key / API Secret missing");
         }
 
         const result = await postLastfm(cfg, {
-            method: "auth.getMobileSession",
-            username: cfg.username,
-            password: cfg.password,
+            method: "auth.getToken",
+            api_key: cfg.apiKey
+        });
+
+        const token = result?.token;
+        if (!token) {
+            throw new Error(`Could not get Last.fm auth token: ${JSON.stringify(result)}`);
+        }
+
+        return token;
+    }
+
+    async function getSessionKeyFromToken(lastfm, token) {
+        const cfg = normalizeLastfmSettings(lastfm);
+        const cleanToken = String(token || "").trim();
+
+        if (!cfg.apiKey || !cfg.apiSecret) {
+            throw new Error("Last.fm API Key / API Secret missing");
+        }
+
+        if (!cleanToken) {
+            throw new Error("Last.fm auth token missing");
+        }
+
+        const result = await postLastfm(cfg, {
+            method: "auth.getSession",
+            token: cleanToken,
             api_key: cfg.apiKey
         });
 
         const sessionKey = result?.session?.key;
         if (!sessionKey) {
-            throw new Error(`Could not get Last.fm session key: ${JSON.stringify(result)}`);
+            throw new Error(`Could not get Last.fm session key from token: ${JSON.stringify(result)}`);
         }
 
         return sessionKey;
     }
 
-    async function validateCredentials(lastfm) {
-        const sessionKey = await getSessionKey(lastfm);
-        return { ok: true, sessionKey };
+    async function validateSessionKey(lastfm) {
+        const cfg = normalizeLastfmSettings(lastfm);
+        const sk = String(cfg.sessionKey || "").trim();
+
+        if (!sk) {
+            throw new Error("Last.fm session key missing");
+        }
+
+        return await postLastfm(cfg, {
+            method: "user.getInfo",
+            sk,
+            api_key: cfg.apiKey
+        });
     }
 
     async function updateNowPlaying(lastfm, artist, track, album = "", duration = null) {
@@ -336,8 +377,10 @@
         hasStandaloneRuntimeAuth,
         buildApiSig,
         postLastfm,
-        getSessionKey,
-        validateCredentials,
+        getAuthToken,
+        getSessionKeyFromToken,
+        buildLastfmAuthUrl,
+        validateSessionKey,
         updateNowPlaying,
         scrobble
     };

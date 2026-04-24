@@ -52,3 +52,5 @@ __pycache__/
 make-bundles.ps1
 
 !release/yamusic_lastfm_popup_windows_x64.zip
+
+yandex_to_lastfm_rs/target/

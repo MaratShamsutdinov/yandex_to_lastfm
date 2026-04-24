@@ -1,3 +1,5 @@
+use crate::config::{LASTFM_API_KEY, LASTFM_API_SECRET};
+
 use serde::{Deserialize, Serialize};
 
 use std::fs;
@@ -18,6 +20,12 @@ pub struct LastfmConfig {
 
     #[serde(default)]
     pub synced_from_extension: bool,
+
+    #[serde(default)]
+    pub auth_token: String,
+
+    #[serde(default)]
+    pub auth_token_requested_at: i64,
 }
 
 impl LastfmConfig {
@@ -31,7 +39,6 @@ impl LastfmConfig {
     pub fn has_companion_auth(&self) -> bool {
         !self.api_key.trim().is_empty()
             && !self.api_secret.trim().is_empty()
-            && !self.username.trim().is_empty()
             && !self.session_key.trim().is_empty()
     }
 
@@ -40,13 +47,27 @@ impl LastfmConfig {
     }
 
     pub fn normalized(&self) -> Self {
+        let api_key = if self.api_key.trim().is_empty() {
+            LASTFM_API_KEY.to_string()
+        } else {
+            self.api_key.trim().to_string()
+        };
+
+        let api_secret = if self.api_secret.trim().is_empty() {
+            LASTFM_API_SECRET.to_string()
+        } else {
+            self.api_secret.trim().to_string()
+        };
+
         Self {
-            api_key: self.api_key.trim().to_string(),
-            api_secret: self.api_secret.trim().to_string(),
+            api_key,
+            api_secret,
             username: self.username.trim().to_string(),
             password: self.password.trim().to_string(),
             session_key: self.session_key.trim().to_string(),
             synced_from_extension: self.synced_from_extension,
+            auth_token: self.auth_token.trim().to_string(),
+            auth_token_requested_at: self.auth_token_requested_at,
         }
     }
 }
@@ -62,10 +83,6 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn is_complete(&self) -> bool {
         self.lastfm.is_complete()
-    }
-
-    pub fn has_full_credentials(&self) -> bool {
-        self.lastfm.has_full_credentials()
     }
 
     pub fn has_companion_auth(&self) -> bool {

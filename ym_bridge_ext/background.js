@@ -26,7 +26,6 @@ const DEFAULT_SETTINGS = {
     apiKey: "",
     apiSecret: "",
     username: "",
-    password: "",
     sessionKey: ""
   },
 
@@ -62,7 +61,9 @@ const DEFAULT_STATE = {
     sessionCheckedAt: 0,
     lastError: null,
     lastNowPlayingAt: 0,
-    lastScrobbleAt: 0
+    lastScrobbleAt: 0,
+    authPending: false,
+    authDeadlineAt: 0
   },
 
   queue: [],
@@ -357,7 +358,6 @@ function normalizeSettings(rawSettings) {
       apiKey: String(raw?.lastfm?.apiKey || "").trim(),
       apiSecret: String(raw?.lastfm?.apiSecret || "").trim(),
       username: String(raw?.lastfm?.username || "").trim(),
-      password: String(raw?.lastfm?.password || "").trim(),
       sessionKey: String(raw?.lastfm?.sessionKey || "").trim()
     },
 
@@ -468,18 +468,20 @@ async function saveState() {
 }
 
 async function pushLastfmToCompanion(reason = "manual") {
+  const cfg = YMBridgeLastfmApi.normalizeLastfmSettings(settings?.lastfm || {});
+
   const payload = {
     schema_version: 1,
     source: "ym-mediabridge-extension",
     synced_at: now(),
     reason,
-    api_key: String(settings?.lastfm?.apiKey || "").trim(),
-    api_secret: String(settings?.lastfm?.apiSecret || "").trim(),
+    api_key: cfg.apiKey,
+    api_secret: cfg.apiSecret,
     username: String(settings?.lastfm?.username || "").trim(),
-    session_key: String(settings?.lastfm?.sessionKey || "").trim()
+    session_key: String(cfg.sessionKey || "").trim()
   };
 
-  if (!payload.api_key || !payload.api_secret || !payload.username || !payload.session_key) {
+  if (!payload.api_key || !payload.api_secret || !payload.session_key) {
     return { ok: false, skipped: true, error: "lastfm payload incomplete" };
   }
 
@@ -506,10 +508,119 @@ async function pushLastfmToCompanion(reason = "manual") {
   }
 }
 
-async function importLastfmFromCompanion(reason = "manual-import") {
-  const resp = await fetch("http://127.0.0.1:5000/companion/export-lastfm", {
-    method: "GET"
+function isInvalidLastfmSessionError(err) {
+  const text = String(err || "").toLowerCase();
+
+  return (
+    text.includes("invalid session key") ||
+    text.includes("please re-authenticate") ||
+    text.includes("last.fm error 9") ||
+    text.includes("\"error\":9") ||
+    text.includes('"error":9')
+  );
+}
+
+async function markLastfmSessionInvalid(err) {
+  const message = "Last.fm session was revoked or expired. Connect Last.fm again.";
+
+  settings.lastfm = {
+    ...(settings.lastfm || {}),
+    sessionKey: ""
+  };
+
+  runtimeState.lastfm = {
+    ...runtimeState.lastfm,
+    connected: false,
+    authMissing: true,
+    sessionCheckedAt: now(),
+    lastError: message,
+    authPending: false,
+    authDeadlineAt: 0
+  };
+
+  runtimeState.delivery = {
+    ...runtimeState.delivery,
+    mode: YMBridgeMode.getCurrentMode(settings),
+    activeTarget: YMBridgeMode.isStandaloneMode(settings) ? "lastfm" : runtimeState.delivery?.activeTarget,
+    lastDeliveryError: message
+  };
+
+  runtimeState.health = {
+    ok: true,
+    checkedAt: now(),
+    lastError: null
+  };
+
+  warn("Last.fm session invalidated", {
+    error: String(err)
   });
+
+  await saveSettings();
+  await saveState();
+  await updateBadge();
+}
+
+async function startExtensionLastfmBrowserAuth() {
+  const token = await YMBridgeLastfmApi.getAuthToken(settings.lastfm);
+  const authUrl = YMBridgeLastfmApi.buildLastfmAuthUrl(settings.lastfm, token);
+
+  runtimeState.lastfm = {
+    ...runtimeState.lastfm,
+    authPending: true,
+    authDeadlineAt: now() + 60000,
+    lastError: null
+  };
+
+  await saveState();
+  await updateBadge();
+
+  await chrome.tabs.create({
+    url: authUrl,
+    active: true
+  });
+
+  return { token, authUrl };
+}
+
+async function finishExtensionLastfmBrowserAuth(token) {
+  const sessionKey = await YMBridgeLastfmApi.getSessionKeyFromToken(settings.lastfm, token);
+
+  settings.lastfm = {
+    ...(settings.lastfm || {}),
+    sessionKey: String(sessionKey || "").trim()
+  };
+
+  runtimeState.lastfm = {
+    ...runtimeState.lastfm,
+    connected: !!sessionKey,
+    authMissing: !sessionKey,
+    sessionCheckedAt: now(),
+    lastError: null,
+    authPending: false,
+    authDeadlineAt: 0
+  };
+
+  await saveSettings();
+  await saveState();
+  await updateBadge();
+
+  try {
+    await pushLastfmToCompanion("extension-browser-auth");
+  } catch (_) { }
+
+  return buildPublicState();
+}
+
+async function importLastfmFromCompanion(reason = "manual-import") {
+  let resp;
+
+  try {
+    resp = await fetch("http://127.0.0.1:5000/companion/export-lastfm", {
+      method: "GET"
+    });
+  } catch {
+    throw new Error("Desktop companion is not reachable. Start WinApp or connect Last.fm directly in the extension.");
+  }
 
   const text = await resp.text();
 
@@ -528,21 +639,41 @@ async function importLastfmFromCompanion(reason = "manual-import") {
     throw new Error("Desktop companion returned empty Last.fm data");
   }
 
-  settings.lastfm = {
-    ...(settings.lastfm || {}),
+  const importedLastfm = {
     apiKey: String(parsed.api_key || "").trim(),
     apiSecret: String(parsed.api_secret || "").trim(),
     username: String(parsed.username || "").trim(),
-    password: String(settings?.lastfm?.password || "").trim(),
     sessionKey: String(parsed.session_key || "").trim()
+  };
+
+  if (!importedLastfm.sessionKey) {
+    throw new Error("Desktop companion has no Last.fm session. Connect Last.fm in WinApp or directly in the extension.");
+  }
+
+  try {
+    await YMBridgeLastfmApi.validateSessionKey(importedLastfm);
+  } catch (err) {
+    if (isInvalidLastfmSessionError(err)) {
+      await markLastfmSessionInvalid(err);
+      throw new Error("Desktop companion session is invalid or expired. Reconnect Last.fm in the extension or WinApp.");
+    }
+
+    throw err;
+  }
+
+  settings.lastfm = {
+    ...(settings.lastfm || {}),
+    ...importedLastfm
   };
 
   runtimeState.lastfm = {
     ...runtimeState.lastfm,
-    connected: !!String(parsed.session_key || "").trim(),
-    authMissing: !String(parsed.session_key || "").trim(),
+    connected: true,
+    authMissing: false,
     sessionCheckedAt: now(),
-    lastError: null
+    lastError: null,
+    authPending: false,
+    authDeadlineAt: 0
   };
 
   await saveSettings();
@@ -551,7 +682,6 @@ async function importLastfmFromCompanion(reason = "manual-import") {
 
   log("importLastfmFromCompanion OK", {
     reason,
-    username: settings.lastfm.username,
     hasSessionKey: !!settings.lastfm.sessionKey
   });
 
@@ -627,7 +757,7 @@ function resolveActionStatus() {
   }
 
   const hasRuntimeAuth = YMBridgeLastfmApi.hasStandaloneRuntimeAuth(settings?.lastfm);
-  const hasFullConfig = YMBridgeLastfmApi.isLastfmConfigComplete(settings?.lastfm);
+  const lastfmConnected = !!runtimeState.lastfm?.connected;
 
   if (!hasRuntimeAuth) {
     return {
@@ -672,11 +802,19 @@ function resolveActionStatus() {
     };
   }
 
-  if (runtimeState.metadataActive) {
+  if (runtimeState.metadataActive && lastfmConnected) {
     return {
       badgeText: "",
       badgeColor: null,
       title: `YM Bridge\nMode: ${mode}\nStatus: Connected`
+    };
+  }
+
+  if (runtimeState.metadataActive) {
+    return {
+      badgeText: "",
+      badgeColor: null,
+      title: `YM Bridge\nMode: ${mode}\nStatus: Metadata active, Last.fm not verified`
     };
   }
 
@@ -758,6 +896,77 @@ function validateEnvelope(envelope) {
   return { ok: true };
 }
 
+function reconcileQueueBeforeNewTrack(envelope, options = {}) {
+  if (!Array.isArray(runtimeState.queue) || !runtimeState.queue.length) {
+    return 0;
+  }
+
+  const markPastPlayback = !!options.markPastPlayback;
+  const modeLabel = String(options.modeLabel || "queue");
+
+  const nextStartedAt = Number.isFinite(Number(envelope?.started_at))
+    ? Math.floor(Number(envelope.started_at))
+    : Math.floor(now() / 1000);
+
+  const nextTrackKey = envelope?.track_key || standaloneTrackKey(envelope);
+
+  const kept = [];
+  let dropped = 0;
+
+  for (const item of runtimeState.queue) {
+    if (!item || item.scrobble_sent) {
+      kept.push(item);
+      continue;
+    }
+
+    const itemTrackKey = item.track_key || standaloneTrackKey(item);
+
+    if (itemTrackKey === nextTrackKey) {
+      kept.push(item);
+      continue;
+    }
+
+    const itemStartedAt = Number.isFinite(Number(item.started_at))
+      ? Math.floor(Number(item.started_at))
+      : 0;
+
+    if (!itemStartedAt || nextStartedAt <= itemStartedAt) {
+      kept.push(item);
+      continue;
+    }
+
+    const listenedSecs = nextStartedAt - itemStartedAt;
+
+    if (listenedSecs < SCROBBLE_AFTER_SECS) {
+      dropped += 1;
+
+      log(`DROP skipped ${modeLabel} item before scrobble threshold`, {
+        event_id: item.event_id,
+        artist: item.artist,
+        track: item.track,
+        listenedSecs,
+        thresholdSecs: SCROBBLE_AFTER_SECS,
+        next_artist: envelope.artist,
+        next_track: envelope.track
+      });
+
+      continue;
+    }
+
+    if (markPastPlayback && !item.now_playing_sent) {
+      item.now_playing_sent = true;
+    }
+
+    kept.push(item);
+  }
+
+  if (dropped > 0) {
+    runtimeState.queue = kept;
+  }
+
+  return dropped;
+}
+
 function enqueue(envelope) {
   pruneDedupeMap();
 
@@ -772,6 +981,11 @@ function enqueue(envelope) {
       runtimeState.stats.droppedDuplicate += 1;
       return { ok: true, queued: false, duplicate: true };
     }
+
+    reconcileQueueBeforeNewTrack(envelope, {
+      markPastPlayback: false,
+      modeLabel: "desktop bridge"
+    });
   } else {
     const activeStandaloneItem = runtimeState.queue.find(item =>
       item.track_key === envelope.track_key &&
@@ -809,6 +1023,11 @@ function enqueue(envelope) {
         queueLength: runtimeState.queue.length
       };
     }
+
+    reconcileQueueBeforeNewTrack(envelope, {
+      markPastPlayback: true,
+      modeLabel: "standalone"
+    });
   }
 
   const maxQueue = Math.max(1, Number(settings.maxQueue) || DEFAULT_SETTINGS.maxQueue);
@@ -955,6 +1174,21 @@ async function pumpQueue() {
       } catch (err) {
         runtimeState.stats.failed += 1;
         runtimeState.lastError = String(err);
+        if (
+          YMBridgeMode.isStandaloneMode(settings) &&
+          isInvalidLastfmSessionError(err)
+        ) {
+          await markLastfmSessionInvalid(err);
+
+          warn("KEEP invalid-session item until reconnect", {
+            event_id: runtimeState.queue[0]?.event_id,
+            error: String(err)
+          });
+
+          await saveState();
+          await updateBadge();
+          return;
+        }
         runtimeState.health = {
           ok: false,
           checkedAt: now(),
@@ -999,9 +1233,21 @@ async function pumpQueue() {
 }
 
 async function applySettings(newSettings) {
+  const incoming = newSettings || {};
+
   settings = normalizeSettings({
     ...settings,
-    ...(newSettings || {})
+    ...incoming,
+
+    desktopBridge: {
+      ...(settings.desktopBridge || {}),
+      ...(incoming.desktopBridge || {})
+    },
+
+    lastfm: {
+      ...(settings.lastfm || {}),
+      ...(incoming.lastfm || {})
+    }
   });
 
   runtimeState.delivery = runtimeState.delivery || {};
@@ -1127,17 +1373,14 @@ function buildEnhancedState() {
     }
   } else {
     const hasSessionKey = !!String(settings?.lastfm?.sessionKey || "").trim();
-    const hasFullConfig = YMBridgeLastfmApi.isLastfmConfigComplete(settings?.lastfm);
+    const lastfmConnected = !!runtime.lastfm?.connected;
     const pendingStandalone = Array.isArray(runtimeState.queue)
       ? runtimeState.queue.some(item => item.now_playing_sent && !item.scrobble_sent)
       : false;
 
-    if (!hasFullConfig) {
+    if (!hasSessionKey) {
       status = "lastfm-auth-missing";
-      hint = "Open settings and fill in Last.fm credentials.";
-    } else if (!hasSessionKey) {
-      status = "lastfm-auth-missing";
-      hint = "Validate Last.fm and save the session key.";
+      hint = "Connect Last.fm or import a session from desktop companion.";
     } else if (runtime.lastfm?.lastError) {
       status = "lastfm-error";
       hint = runtime.lastfm.lastError;
@@ -1150,12 +1393,12 @@ function buildEnhancedState() {
     } else if (pendingStandalone) {
       status = "scrobble-pending";
       hint = "Now Playing sent. Waiting before scrobble.";
-    } else if (browser.metadataActive && runtime.lastfm?.connected) {
+    } else if (browser.metadataActive && lastfmConnected) {
       status = "connected";
       hint = "Direct Last.fm delivery is healthy.";
     } else if (browser.metadataActive) {
-      status = "connected";
-      hint = "Track metadata is flowing.";
+      status = "metadata-active";
+      hint = "Track metadata is flowing. Last.fm session has not been verified yet.";
     } else {
       status = "waiting-for-track-metadata";
       hint = "Waiting for Yandex Music metadata.";
@@ -1377,18 +1620,61 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         runtimeState.lastMetadataAt = now();
         runtimeState.metadataHookEstablished = true;
 
+        const album = String(payload.album || "").trim();
+        const coverUrl = String(payload.cover_url || "").trim();
+        const duration = Number.isFinite(payload.duration) && payload.duration > 0
+          ? payload.duration
+          : null;
+
+        const heartbeatTrackKey = standaloneTrackKey({ artist, track, album });
+
         if (!runtimeState.lastTrack) {
           runtimeState.lastTrack = {
             artist,
             track,
-            album: String(payload.album || "").trim(),
-            cover_url: String(payload.cover_url || "").trim(),
-            duration: Number.isFinite(payload.duration) ? payload.duration : null,
+            album,
+            cover_url: coverUrl,
+            duration,
             page_url: payload.page_url ?? null,
             updated_at: now()
           };
         } else {
+          const lastTrackKey = standaloneTrackKey(runtimeState.lastTrack);
+
+          if (lastTrackKey === heartbeatTrackKey) {
+            if (duration != null) {
+              runtimeState.lastTrack.duration = duration;
+            }
+
+            if (coverUrl) {
+              runtimeState.lastTrack.cover_url = coverUrl;
+            }
+
+            if (album && !runtimeState.lastTrack.album) {
+              runtimeState.lastTrack.album = album;
+            }
+          }
+
           runtimeState.lastTrack.updated_at = now();
+        }
+
+        if (Array.isArray(runtimeState.queue)) {
+          const activeItem = runtimeState.queue.find(item =>
+            !item.scrobble_sent &&
+            (item.track_key || standaloneTrackKey(item)) === heartbeatTrackKey
+          );
+
+          if (activeItem) {
+            if (duration != null) {
+              activeItem.duration = duration;
+            }
+
+            if (coverUrl) {
+              activeItem.cover_url = coverUrl;
+            }
+
+            activeItem.sent_at = now();
+          }
         }
 
         await refreshYandexTabState();
@@ -1434,6 +1720,75 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      if (message.type === "connect-lastfm-browser-auth") {
+        (async () => {
+          try {
+            const { token } = await startExtensionLastfmBrowserAuth();
+
+            const startedAt = now();
+            const timeoutMs = 60000;
+
+            while ((now() - startedAt) < timeoutMs) {
+              try {
+                const state = await finishExtensionLastfmBrowserAuth(token);
+
+                sendResponse({
+                  ok: true,
+                  data: { state }
+                });
+                return;
+              } catch (err) {
+                const text = String(err || "");
+                const lower = text.toLowerCase();
+
+                if (
+                  lower.includes("unauthorized token") ||
+                  lower.includes("\"error\":14") ||
+                  lower.includes("invalid auth token")
+                ) {
+                  await new Promise(r => setTimeout(r, 1000));
+                  continue;
+                }
+
+                throw err;
+              }
+            }
+
+            runtimeState.lastfm = {
+              ...runtimeState.lastfm,
+              authPending: false,
+              authDeadlineAt: 0,
+              lastError: "Last.fm approval timed out"
+            };
+
+            await saveState();
+            await updateBadge();
+
+            sendResponse({
+              ok: false,
+              error: "Last.fm approval timed out"
+            });
+          } catch (err) {
+            runtimeState.lastfm = {
+              ...runtimeState.lastfm,
+              authPending: false,
+              authDeadlineAt: 0,
+              lastError: String(err)
+            };
+
+            await saveState();
+            await updateBadge();
+
+            sendResponse({
+              ok: false,
+              error: String(err)
+            });
+          }
+        })();
+
+        return true;
+      }
+
       if (message.type === "get-state") {
         sendResponse({ ok: true, data: buildPublicState() });
         return;
@@ -1464,48 +1819,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await applySettings(message.settings || {});
         await pushLastfmToCompanion("save-settings");
         sendResponse({ ok: true, data: buildPublicState() });
-        return;
-      }
-
-      if (message.type === "validate-lastfm") {
-        try {
-          log("validate-lastfm START", {
-            username: message?.lastfm?.username || "",
-            hasApiKey: !!message?.lastfm?.apiKey,
-            hasApiSecret: !!message?.lastfm?.apiSecret,
-            hasPassword: !!message?.lastfm?.password
-          });
-
-          const lastfmInput = message.lastfm || settings.lastfm || {};
-          const result = await YMBridgeLastfmApi.validateCredentials(lastfmInput);
-
-          settings.lastfm = {
-            ...(settings.lastfm || {}),
-            ...lastfmInput,
-            sessionKey: result.sessionKey
-          };
-
-          await saveSettings();
-          await pushLastfmToCompanion("validate-lastfm");
-
-          log("validate-lastfm OK", {
-            username: lastfmInput?.username || "",
-            hasSessionKey: !!result?.sessionKey
-          });
-
-          sendResponse({
-            ok: true,
-            data: {
-              sessionKey: result.sessionKey
-            }
-          });
-        } catch (err) {
-          errlog("validate-lastfm FAILED", err);
-          sendResponse({
-            ok: false,
-            error: String(err)
-          });
-        }
         return;
       }
 
@@ -1544,7 +1857,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         runtimeState.delivery = {
           ...runtimeState.delivery,
           mode: YMBridgeMode.getCurrentMode(settings),
-          activeTarget: YMBridgeMode.isStandaloneMode(settings) ? "lastfm" : runtimeState.delivery?.activeTarget,
+          activeTarget: YMBridgeMode.isStandaloneMode(settings)
+            ? "lastfm"
+            : runtimeState.delivery?.activeTarget,
           lastDeliveryError: null
         };
 
@@ -1560,52 +1875,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       if (message.type === "reconnect-lastfm") {
-        try {
-          const validated = await YMBridgeLastfmApi.validateCredentials(settings.lastfm);
-
-          settings.lastfm = {
-            ...(settings.lastfm || {}),
-            sessionKey: validated.sessionKey
-          };
-
-          runtimeState.lastfm = {
-            ...runtimeState.lastfm,
-            connected: true,
-            authMissing: false,
-            sessionCheckedAt: now(),
-            lastError: null
-          };
-
-          await saveSettings();
-          await saveState();
-          await updateBadge();
-          await pushLastfmToCompanion("reconnect-lastfm");
-
-          sendResponse({
-            ok: true,
-            data: {
-              sessionKey: validated.sessionKey,
-              state: buildPublicState()
-            }
-          });
-        } catch (err) {
-          runtimeState.lastfm = {
-            ...runtimeState.lastfm,
-            connected: false,
-            authMissing: !YMBridgeLastfmApi.isLastfmConfigComplete(settings?.lastfm),
-            sessionCheckedAt: now(),
-            lastError: String(err)
-          };
-
-          await saveState();
-          await updateBadge();
-
-          sendResponse({
-            ok: false,
-            error: String(err)
-          });
-        }
-        return;
+        chrome.runtime.sendMessage({ type: "connect-lastfm-browser-auth" }, sendResponse);
+        return true;
       }
 
       if (message.type === "get-enhanced-state") {

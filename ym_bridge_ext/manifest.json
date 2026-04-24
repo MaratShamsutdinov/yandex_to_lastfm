@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
-    "name": "Yandex Music MediaSession Bridge",
-    "version": "1.0.1",
+    "name": "Yandex Music → Last.fm Bridge (Scrobbler)",
+    "version": "1.0.2",
     "description": "Reliable Yandex Music bridge with side panel control center",
     "background": {
         "service_worker": "background.js"

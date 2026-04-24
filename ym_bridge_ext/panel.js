@@ -180,12 +180,16 @@ async function getState() {
     return await sendMessage("get-state");
 }
 
+function hasStandaloneRuntimeAuth(settings) {
+    return !!String(settings?.lastfm?.sessionKey || "").trim();
+}
+
 function resolveStatus(data) {
     const runtime = data.runtime || {};
     const browser = runtime.browser || {};
     const ui = data.ui || null;
     const mode = data.settings?.mode || "desktop_bridge";
-    const hasRuntimeAuth = !!globalThis.YMBridgeLastfmApi?.hasStandaloneRuntimeAuth?.(data.settings?.lastfm);
+    const hasRuntimeAuth = hasStandaloneRuntimeAuth(data.settings);
     const lastfmConnected = !!runtime.lastfm?.connected;
     const lastfmError = String(runtime.lastfm?.lastError || "").trim();
     const standalonePending = Array.isArray(runtime.queue)
@@ -303,6 +307,8 @@ function mapUiStatusToLabel(status) {
             return "Reload Yandex Music tab";
         case "waiting-for-track-metadata":
             return "Waiting for track metadata";
+        case "metadata-active":
+            return "Metadata active";
         case "lastfm-auth-missing":
             return "Last.fm connection needed";
         case "lastfm-error":
@@ -444,7 +450,7 @@ function renderButtons(data) {
     const settings = data.settings || {};
     const browser = runtime.browser || {};
     const mode = settings.mode || "desktop_bridge";
-    const hasRuntimeAuth = !!globalThis.YMBridgeLastfmApi?.hasStandaloneRuntimeAuth?.(settings?.lastfm);
+    const hasRuntimeAuth = hasStandaloneRuntimeAuth(settings);
     const queueLength = Number(runtime.queueLength || 0);
     const standalonePending = Array.isArray(runtime.queue)
         ? runtime.queue.some(item => item.now_playing_sent && !item.scrobble_sent)
@@ -457,10 +463,17 @@ function renderButtons(data) {
     const appPageBtn = $("appPageBtn");
     const copyBtn = $("copyBtn");
 
+    const primary = resolvePrimaryAction(data);
+    const primaryType = primary.actionType || "";
+
     const canRetry =
         queueLength > 0 ||
         standalonePending ||
         !!runtime.lastfm?.lastError;
+
+    for (const btn of [focusBtn, reloadBtn, retryBtn, optionsBtn, appPageBtn, copyBtn]) {
+        btn?.classList.remove("hidden");
+    }
 
     if (focusBtn) {
         focusBtn.disabled = !browser.yandexTabOpen;
@@ -480,7 +493,7 @@ function renderButtons(data) {
 
     if (optionsBtn) {
         optionsBtn.textContent = mode === "standalone"
-            ? "Last.fm settings"
+            ? "Last.fm account"
             : "Extension settings";
     }
 
@@ -495,6 +508,31 @@ function renderButtons(data) {
         copyBtn.textContent = "Copy diagnostics";
     }
 
+    if (!browser.yandexTabOpen) {
+        focusBtn?.classList.add("hidden");
+        reloadBtn?.classList.add("hidden");
+    }
+
+    if (primaryType === "focus-yandex-music-tab") {
+        focusBtn?.classList.add("hidden");
+    }
+
+    if (primaryType === "reload-yandex-music-tab") {
+        reloadBtn?.classList.add("hidden");
+    }
+
+    if (primaryType === "retry-now") {
+        retryBtn?.classList.add("hidden");
+    }
+
+    if (primaryType === "open-desktop-app-page") {
+        appPageBtn?.classList.add("hidden");
+    }
+
+    if (primaryType === "open-options-page") {
+        optionsBtn?.classList.add("hidden");
+    }
+
     rebalanceSecondaryGrid();
 }
 
@@ -502,7 +540,7 @@ function resolvePrimaryAction(data) {
     const runtime = data.runtime || {};
     const browser = runtime.browser || {};
     const mode = data.settings?.mode || "desktop_bridge";
-    const hasRuntimeAuth = !!globalThis.YMBridgeLastfmApi?.hasStandaloneRuntimeAuth?.(data.settings?.lastfm);
+    const hasRuntimeAuth = hasStandaloneRuntimeAuth(data.settings);
     const lastfmError = String(runtime.lastfm?.lastError || "").trim();
     const standalonePending = Array.isArray(runtime.queue)
         ? runtime.queue.some(item => item.now_playing_sent && !item.scrobble_sent)
@@ -534,7 +572,7 @@ function resolvePrimaryAction(data) {
             };
         }
 
-        if (browser.reloadLikelyNeeded || !browser.metadataHookEstablished) {
+        if (browser.reloadLikelyNeeded) {
             return {
                 label: "Reload Yandex Music tab",
                 actionType: "reload-yandex-music-tab",
@@ -573,7 +611,7 @@ function resolvePrimaryAction(data) {
         };
     }
 
-    if (browser.reloadLikelyNeeded || !browser.metadataHookEstablished) {
+    if (browser.reloadLikelyNeeded) {
         return {
             label: "Reload Yandex Music tab",
             actionType: "reload-yandex-music-tab",
@@ -599,9 +637,6 @@ function resolvePrimaryAction(data) {
 
 function renderPrimaryAction(data) {
     const btn = $("primaryActionBtn");
-    const focusBtn = $("focusYmBtn");
-    const reloadBtn = $("reloadYmBtn");
-
     if (!btn) return;
 
     const action = resolvePrimaryAction(data);
@@ -615,15 +650,6 @@ function renderPrimaryAction(data) {
         action.actionType === "reload-yandex-music-tab";
 
     btn.className = `primaryActionBtn ready ${tone}${shouldPulse ? " pulse" : ""}`;
-
-    // убираем визуальный дубль главного действия из secondary ряда
-    if (focusBtn) {
-        focusBtn.classList.toggle("hidden", action.actionType === "focus-yandex-music-tab");
-    }
-
-    if (reloadBtn) {
-        reloadBtn.classList.toggle("hidden", action.actionType === "reload-yandex-music-tab");
-    }
 }
 
 function renderHeroTone(data) {

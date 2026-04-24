@@ -1,4 +1,6 @@
 pub const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+pub const LASTFM_API_KEY: &str = "82486b94f8525fe02a64e11aef66da13";
+pub const LASTFM_API_SECRET: &str = "7130cd81905f53c114c96b7efe98580f";
 
 // ====== LOCAL SERVER =========================================================
 pub const SERVER_BIND_ADDR: &str = "127.0.0.1:5000";
@@ -92,8 +94,7 @@ pub const TRAY_MENU_STATUS_NOT_DETECTED_TEXT: &str = "Chrome extension: not dete
 pub const TRAY_MENU_STATUS_CONNECTED_TEXT: &str = "Chrome extension: connected";
 pub const TRAY_MENU_INSTALL_TEXT: &str = "Install Chrome Extension";
 pub const TRAY_MENU_OPEN_EXTENSIONS_TEXT: &str = "Open extension page";
-pub const TRAY_MENU_LASTFM_SETTINGS_TEXT: &str = "Last.fm settings";
-pub const TRAY_MENU_VALIDATE_LASTFM_TEXT: &str = "Validate Last.fm connection";
+pub const TRAY_MENU_LASTFM_SETTINGS_TEXT: &str = "Last.fm account";
 pub const TRAY_MENU_SHOW_TEXT: &str = "Show test popup";
 pub const TRAY_MENU_EXIT_TEXT: &str = "Exit";
 pub const TRAY_MENU_AUTOSTART_ENABLE_TEXT: &str = "Enable autostart";

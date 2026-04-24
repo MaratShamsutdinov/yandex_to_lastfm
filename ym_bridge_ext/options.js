@@ -19,7 +19,14 @@ function setLastfmValidateStatus(text, isError = false) {
     el.style.color = isError ? "#ff7b72" : "#7ee787";
 }
 
-function setSessionPill(hasSessionKey, lastfmError = "") {
+function cleanErrorMessage(err) {
+    return String(err || "")
+        .replace(/^Error:\s*/i, "")
+        .replace(/^Error:\s*/i, "")
+        .trim();
+}
+
+function setSessionPill(hasSessionKey, lastfmError = "", lastfmConnected = false) {
     const pill = $("lastfmSessionPill");
     if (!pill) return;
 
@@ -31,9 +38,15 @@ function setSessionPill(hasSessionKey, lastfmError = "") {
         return;
     }
 
-    if (hasSessionKey) {
+    if (hasSessionKey && lastfmConnected) {
         pill.textContent = "Session: connected";
         pill.classList.add("ok");
+        return;
+    }
+
+    if (hasSessionKey) {
+        pill.textContent = "Session: saved";
+        pill.classList.add("warn");
         return;
     }
 
@@ -53,13 +66,7 @@ function setCompanionImportHintVisible(visible) {
 }
 
 function hasAnyLastfmData(lastfm = {}) {
-    return !!(
-        String(lastfm.apiKey || "").trim() ||
-        String(lastfm.apiSecret || "").trim() ||
-        String(lastfm.username || "").trim() ||
-        String(lastfm.password || "").trim() ||
-        String(lastfm.sessionKey || "").trim()
-    );
+    return !!String(lastfm.sessionKey || "").trim();
 }
 
 function loadForm(settings, runtime = null) {
@@ -76,10 +83,7 @@ function loadForm(settings, runtime = null) {
     $("healthcheckIntervalMs").value = desktop.healthcheckIntervalMs ?? 15000;
     $("connectTimeoutMs").value = desktop.connectTimeoutMs ?? 4000;
 
-    $("lastfmApiKey").value = lastfm.apiKey || "";
-    $("lastfmApiSecret").value = lastfm.apiSecret || "";
-    $("lastfmUsername").value = lastfm.username || "";
-    $("lastfmPassword").value = lastfm.password || "";
+    $("lastfmSessionKey").value = lastfm.sessionKey || "";
 
     $("debugLogs").checked = !!settings.debugLogs;
     $("sendAlbum").checked = !!settings.sendAlbum;
@@ -91,15 +95,20 @@ function loadForm(settings, runtime = null) {
 
     const hasSessionKey = !!String(lastfm.sessionKey || "").trim();
     const lastfmError = String(runtime?.lastfm?.lastError || "").trim();
+    const lastfmConnected = !!runtime?.lastfm?.connected;
 
-    setSessionPill(hasSessionKey, lastfmError);
+    setSessionPill(hasSessionKey, lastfmError, lastfmConnected);
 
     if (mode === "standalone") {
         setLastfmValidateStatus(
-            hasSessionKey
-                ? "Standalone mode is ready to deliver directly to Last.fm."
-                : "Validate Last.fm to create or refresh the session key.",
-            false
+            lastfmError
+                ? cleanErrorMessage(lastfmError)
+                : lastfmConnected
+                    ? "Standalone mode is connected to Last.fm."
+                    : hasSessionKey
+                        ? "Session key is saved. It will be validated on the next Last.fm request."
+                        : "Connect Last.fm, import a session from the desktop companion, or paste a session key manually.",
+            !!lastfmError
         );
     } else {
         setLastfmValidateStatus("");
@@ -111,8 +120,6 @@ function loadForm(settings, runtime = null) {
 }
 
 function readForm(existingSettings = null) {
-    const existingSessionKey = String(existingSettings?.lastfm?.sessionKey || "").trim();
-
     return {
         mode: $("modeStandalone").checked ? "standalone" : "desktop_bridge",
 
@@ -128,11 +135,7 @@ function readForm(existingSettings = null) {
         },
 
         lastfm: {
-            apiKey: $("lastfmApiKey").value.trim(),
-            apiSecret: $("lastfmApiSecret").value.trim(),
-            username: $("lastfmUsername").value.trim(),
-            password: $("lastfmPassword").value,
-            sessionKey: existingSessionKey
+            sessionKey: $("lastfmSessionKey").value.trim()
         },
 
         debugLogs: $("debugLogs").checked,
@@ -143,12 +146,6 @@ function readForm(existingSettings = null) {
         baseRetryMs: Number($("baseRetryMs").value),
         maxRetryMs: Number($("maxRetryMs").value)
     };
-}
-
-function openLastfmApiPage() {
-    chrome.tabs.create({
-        url: "https://www.last.fm/api/account/create"
-    });
 }
 
 async function companionHasExportableLastfm() {
@@ -164,7 +161,6 @@ async function companionHasExportableLastfm() {
             data?.ok &&
             String(data.api_key || "").trim() &&
             String(data.api_secret || "").trim() &&
-            String(data.username || "").trim() &&
             String(data.session_key || "").trim()
         );
     } catch {
@@ -199,89 +195,64 @@ async function refresh() {
 $("modeDesktopBridge").addEventListener("change", updateModeVisibility);
 $("modeStandalone").addEventListener("change", updateModeVisibility);
 
-$("validateLastfmBtn")?.addEventListener("click", async () => {
-    const state = await getState();
-    const existingSettings = state?.ok ? state.data.settings : null;
-    const nextSettings = readForm(existingSettings);
 
-    setLastfmValidateStatus("Validating Last.fm...");
-
+$("connectLastfmBtn")?.addEventListener("click", async () => {
     try {
-        const resp = await Promise.race([
-            chrome.runtime.sendMessage({
-                type: "validate-lastfm",
-                lastfm: nextSettings.lastfm
-            }),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("Validation timeout after 20s")), 20000)
-            )
-        ]);
-
-        if (!resp?.ok) {
-            setLastfmValidateStatus(`Validation failed: ${resp?.error || "unknown"}`, true);
-            setSessionPill(false, resp?.error || "validation failed");
-            return;
-        }
-
-        nextSettings.lastfm.sessionKey = resp.data.sessionKey;
-
-        const saveResp = await chrome.runtime.sendMessage({
-            type: "save-settings",
-            settings: nextSettings
+        setLastfmValidateStatus("Opening Last.fm approval page...");
+        const resp = await chrome.runtime.sendMessage({
+            type: "connect-lastfm-browser-auth"
         });
 
-        if (!saveResp?.ok) {
-            setLastfmValidateStatus(`Save after validation failed: ${saveResp?.error || "unknown"}`, true);
-            return;
+        if (!resp?.ok) {
+            throw new Error(resp?.error || "Last.fm connect failed");
         }
 
-        setLastfmValidateStatus("Last.fm connection OK. Session key received.");
-        setSessionPill(true, "");
-        setStatus("Settings saved with Last.fm session key");
+        const state = await getState();
+        loadForm(state.data.settings, state.data.runtime);
+        setLastfmValidateStatus("Last.fm connected successfully.");
+        setStatus("Last.fm connected");
     } catch (err) {
-        setLastfmValidateStatus(`Validation failed: ${String(err)}`, true);
-        setSessionPill(false, String(err));
+        setLastfmValidateStatus(String(err), true);
     }
 });
 
 $("reconnectLastfmBtn")?.addEventListener("click", async () => {
-    setLastfmValidateStatus("Reconnecting Last.fm session...");
+    try {
+        setLastfmValidateStatus("Reconnecting Last.fm...");
+        const resp = await chrome.runtime.sendMessage({
+            type: "reconnect-lastfm"
+        });
 
-    const resp = await chrome.runtime.sendMessage({
-        type: "reconnect-lastfm"
-    });
+        if (!resp?.ok) {
+            throw new Error(resp?.error || "Reconnect failed");
+        }
 
-    if (!resp?.ok) {
-        setLastfmValidateStatus(`Reconnect failed: ${resp?.error || "unknown"}`, true);
-        setSessionPill(false, resp?.error || "reconnect failed");
-        return;
-    }
-
-    setLastfmValidateStatus("Last.fm session refreshed.");
-    setSessionPill(true, "");
-    setStatus("Last.fm session refreshed");
-
-    if (resp.data?.state) {
-        loadForm(resp.data.state.settings, resp.data.state.runtime);
+        const state = await getState();
+        loadForm(state.data.settings, state.data.runtime);
+        setLastfmValidateStatus("Last.fm session refreshed.");
+        setStatus("Last.fm reconnected");
+    } catch (err) {
+        setLastfmValidateStatus(String(err), true);
     }
 });
 
 $("clearSessionBtn")?.addEventListener("click", async () => {
-    const resp = await chrome.runtime.sendMessage({
-        type: "clear-lastfm-session"
-    });
+    try {
+        const resp = await chrome.runtime.sendMessage({
+            type: "clear-lastfm-session"
+        });
 
-    if (!resp?.ok) {
-        setStatus(`Could not clear session: ${resp?.error || "unknown"}`, true);
-        return;
-    }
+        if (!resp?.ok) {
+            throw new Error(resp?.error || "Could not clear session key");
+        }
 
-    setSessionPill(false, "");
-    setLastfmValidateStatus("Session key cleared.");
-    setStatus("Last.fm session key cleared");
-
-    if (resp.data) {
-        loadForm(resp.data.settings, resp.data.runtime);
+        const state = await getState();
+        loadForm(state.data.settings, state.data.runtime);
+        setSessionPill(false, "", false);
+        setLastfmValidateStatus("Session key cleared.");
+        setStatus("Session key cleared");
+    } catch (err) {
+        setLastfmValidateStatus(String(err), true);
     }
 });
 
@@ -302,8 +273,24 @@ $("importFromCompanionBtn")?.addEventListener("click", async () => {
     setStatus("Last.fm settings imported from desktop companion");
 });
 
-$("openLastfmApiBtn")?.addEventListener("click", () => {
-    openLastfmApiPage();
+$("importFromCompanionBtn2")?.addEventListener("click", async () => {
+    try {
+        setLastfmValidateStatus("Checking desktop companion and importing Last.fm session...");
+        const resp = await chrome.runtime.sendMessage({
+            type: "import-lastfm-from-companion"
+        });
+
+        if (!resp?.ok) {
+            throw new Error(resp?.error || "Import failed");
+        }
+
+        const state = await getState();
+        loadForm(state.data.settings, state.data.runtime);
+        setLastfmValidateStatus("Last.fm session imported successfully.");
+        setStatus("Imported from desktop companion");
+    } catch (err) {
+        setLastfmValidateStatus(cleanErrorMessage(err), true);
+    }
 });
 
 $("saveBtn").addEventListener("click", async () => {

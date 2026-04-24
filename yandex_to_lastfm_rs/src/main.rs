@@ -10,12 +10,11 @@ mod ui;
 
 use crate::app_config::{default_app_config, load_app_config, save_app_config};
 use crate::config::{
-    APP_FOOTER_TEXT, TEST_ARTIST_TEXT, TEST_TRACK_TEXT, TRAY_MENU_AUTOSTART_DISABLE_TEXT,
-    TRAY_MENU_AUTOSTART_ENABLE_TEXT, TRAY_MENU_STATUS_CONNECTED_TEXT,
-    TRAY_MENU_STATUS_NOT_DETECTED_TEXT,
+    TRAY_MENU_AUTOSTART_DISABLE_TEXT, TRAY_MENU_AUTOSTART_ENABLE_TEXT,
+    TRAY_MENU_STATUS_CONNECTED_TEXT, TRAY_MENU_STATUS_NOT_DETECTED_TEXT,
 };
-use crate::models::{PopupKind, PopupPayload};
-use crate::server::{validate_lastfm_credentials, ExtensionStatusNotifier, PopupNotifier};
+use crate::models::PopupPayload;
+use crate::server::{ExtensionStatusNotifier, PopupNotifier};
 use crate::ui::tray::build_tray;
 use crate::ui::{show_lastfm_settings_window, show_popup_window};
 
@@ -207,8 +206,6 @@ fn main() {
         tray_open_extensions_id,
         tray_autostart_id,
         tray_lastfm_settings_id,
-        tray_validate_lastfm_id,
-        tray_show_id,
         tray_quit_id,
     ) = build_tray();
 
@@ -276,83 +273,20 @@ fn main() {
                         Ok(Some(config)) => config,
                         Ok(None) => default_app_config(),
                         Err(e) => {
-                            show_error_box("Load Last.fm settings", &e);
+                            show_error_box("Last.fm account", &e);
                             continue;
                         }
                     };
 
                     match show_lastfm_settings_window(current_config) {
-                        Ok(Some(new_config)) => match save_app_config(&new_config) {
-                            Ok(()) => {
-                                app_config = new_config;
-                                show_info_box(
-                                    "Last.fm settings",
-                                    "Settings saved.\n\nRestart the app to apply the new Last.fm credentials.",
-                                );
-                            }
-                            Err(e) => {
-                                show_error_box("Save Last.fm settings", &e);
-                            }
-                        },
+                        Ok(Some(new_config)) => {
+                            app_config = new_config;
+                        }
                         Ok(None) => {}
                         Err(e) => {
-                            show_error_box("Last.fm settings", &e);
+                            show_error_box("Last.fm account", &e);
                         }
                     }
-                } else if event.id == tray_validate_lastfm_id {
-                    let config = match load_app_config() {
-                        Ok(Some(config)) => config,
-                        Ok(None) => {
-                            show_error_box(
-                                "Validate Last.fm connection",
-                                "Last.fm settings are missing.",
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            show_error_box("Load Last.fm settings", &e);
-                            continue;
-                        }
-                    };
-
-                    if !config.is_complete() {
-                        show_error_box(
-                            "Validate Last.fm connection",
-                            "Last.fm settings are incomplete.",
-                        );
-                        continue;
-                    }
-
-                    let rt = match tokio::runtime::Runtime::new() {
-                        Ok(rt) => rt,
-                        Err(e) => {
-                            show_error_box(
-                                "Validate Last.fm connection",
-                                &format!("tokio runtime error: {e}"),
-                            );
-                            continue;
-                        }
-                    };
-
-                    match rt.block_on(async { validate_lastfm_credentials(&config.lastfm).await }) {
-                        Ok(_) => {
-                            show_info_box("Validate Last.fm connection", "Connection OK.");
-                        }
-                        Err(e) => {
-                            show_error_box("Validate Last.fm connection", &e);
-                        }
-                    }
-                } else if event.id == tray_show_id {
-                    popup_notifier(PopupPayload {
-                        kind: PopupKind::Track,
-                        title: TEST_ARTIST_TEXT.to_string(),
-                        line1: TEST_TRACK_TEXT.to_string(),
-                        line2: String::new(),
-                        footer: APP_FOOTER_TEXT.to_string(),
-                        cover_url: None,
-                        cover_path: None,
-                        dominant_rgb: None,
-                    });
                 } else if event.id == tray_quit_id {
                     PostQuitMessage(0);
                 }

@@ -1,62 +1,10 @@
 use crate::app_config::LastfmConfig;
-use crate::config::{API_URL, SESSION_KEY_RETRY_BASE_DELAY_SECS, SESSION_KEY_RETRY_COUNT};
+use crate::config::API_URL;
 use crate::models::PendingScrobble;
 
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use tokio::time::{sleep, Duration};
-
-fn is_permanent_session_key_error(err: &str) -> bool {
-    let e = err.to_ascii_lowercase();
-
-    e.contains("http 401")
-        || e.contains("http 403")
-        || e.contains("invalid api key")
-        || e.contains("invalid method signature")
-        || e.contains("authentication failed")
-        || e.contains("invalid username")
-        || e.contains("invalid password")
-        || e.contains("last.fm error 4")
-        || e.contains("last.fm error 9")
-        || e.contains("last.fm error 10")
-        || e.contains("last.fm error 26")
-}
-
-pub async fn get_session_key_with_retry(
-    client: &Client,
-    lastfm: &LastfmConfig,
-) -> Result<String, String> {
-    let mut last_err = String::new();
-
-    for attempt in 1..=SESSION_KEY_RETRY_COUNT {
-        match get_session_key(client, lastfm).await {
-            Ok(sk) => return Ok(sk),
-            Err(e) => {
-                eprintln!(
-                    "get_session_key attempt {attempt}/{} failed: {e}",
-                    SESSION_KEY_RETRY_COUNT
-                );
-
-                if is_permanent_session_key_error(&e) {
-                    return Err(format!("Last.fm authentication failed: {e}"));
-                }
-
-                last_err = e;
-
-                if attempt < SESSION_KEY_RETRY_COUNT {
-                    let delay_secs = SESSION_KEY_RETRY_BASE_DELAY_SECS * attempt as u64;
-                    sleep(Duration::from_secs(delay_secs)).await;
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "Could not get Last.fm session key after {} attempts: {last_err}",
-        SESSION_KEY_RETRY_COUNT
-    ))
-}
 
 pub async fn get_session_key(client: &Client, lastfm: &LastfmConfig) -> Result<String, String> {
     let lastfm = lastfm.normalized();
@@ -75,6 +23,53 @@ pub async fn get_session_key(client: &Client, lastfm: &LastfmConfig) -> Result<S
         .and_then(|k| k.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Не удалось получить session key: {result}"))
+}
+
+pub async fn get_auth_token(client: &Client, lastfm: &LastfmConfig) -> Result<String, String> {
+    let lastfm = lastfm.normalized();
+
+    if lastfm.api_key.is_empty() || lastfm.api_secret.is_empty() {
+        return Err("Last.fm API Key / API Secret missing".to_string());
+    }
+
+    let mut params = BTreeMap::new();
+    params.insert("method".to_string(), "auth.getToken".to_string());
+    params.insert("api_key".to_string(), lastfm.api_key.clone());
+
+    let result = post_lastfm(client, &lastfm, params).await?;
+
+    result
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Не удалось получить auth token: {result}"))
+}
+
+pub async fn get_session_key_from_token(
+    client: &Client,
+    lastfm: &LastfmConfig,
+    token: &str,
+) -> Result<String, String> {
+    let lastfm = lastfm.normalized();
+    let token = token.trim();
+
+    if token.is_empty() {
+        return Err("Last.fm auth token is empty".to_string());
+    }
+
+    let mut params = BTreeMap::new();
+    params.insert("method".to_string(), "auth.getSession".to_string());
+    params.insert("token".to_string(), token.to_string());
+    params.insert("api_key".to_string(), lastfm.api_key.clone());
+
+    let result = post_lastfm(client, &lastfm, params).await?;
+
+    result
+        .get("session")
+        .and_then(|s| s.get("key"))
+        .and_then(|k| k.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Не удалось получить session key из token: {result}"))
 }
 
 pub async fn scrobble(
@@ -156,7 +151,25 @@ pub async fn post_lastfm(
         return Err(format!("HTTP {status}: {body}"));
     }
 
-    serde_json::from_str::<Value>(&body).map_err(|e| format!("JSON parse error: {e}; body={body}"))
+    let parsed = serde_json::from_str::<Value>(&body)
+        .map_err(|e| format!("JSON parse error: {e}; body={body}"))?;
+
+    if let Some(error_value) = parsed.get("error") {
+        let code = error_value
+            .as_i64()
+            .map(|v| v.to_string())
+            .or_else(|| error_value.as_str().map(|v| v.to_string()))
+            .unwrap_or_else(|| error_value.to_string());
+
+        let message = parsed
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown Last.fm API error");
+
+        return Err(format!("Last.fm error {code}: {message}; body={parsed}"));
+    }
+
+    Ok(parsed)
 }
 
 pub fn build_api_sig(params: &BTreeMap<String, String>, api_secret: &str) -> String {
